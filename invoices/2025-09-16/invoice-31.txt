@@ -1,0 +1,12 @@
+DSS
+deendayal nagar 
+Phone: 7020685839
+
+==== INVOICE ====
+Bill ID: 31
+Date: 2025-09-16 00:04:01
+
+Items:
+- pizza-2 x 1 @ 320.00 = 320.00
+
+Total: 320.00

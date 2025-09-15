@@ -1,0 +1,44 @@
+# Bill Software - User Manual
+
+## Getting Started
+
+### 1. Inventory Management
+- **Add Products:** Click "Add Product" button
+- **Upload Images:** Drag & drop product images
+- **Set Prices:** Enter product prices and stock
+- **Edit Products:** Double-click to edit
+
+### 2. Billing
+- **Select Products:** Click on product images
+- **Set Quantities:** Use +/- buttons
+- **Generate Invoice:** Click "Generate Invoice"
+- **Print:** Click "Print" button
+
+### 3. Table Management
+- **Select Table:** Click on table number
+- **Add Items:** Click product images
+- **View Order:** Check "Table Order" section
+- **Generate Bill:** Click "Generate Bill"
+
+### 4. Reports
+- **Daily Sales:** View today's sales
+- **All Bills:** Complete bill history
+- **Export Data:** Click "Export CSV"
+
+## Keyboard Shortcuts
+- **Ctrl+N:** New product
+- **Ctrl+S:** Save
+- **Ctrl+P:** Print
+- **F5:** Refresh
+
+## Troubleshooting
+- **Software won't start:** Run as Administrator
+- **Images not showing:** Check image file formats
+- **Print issues:** Check printer connection
+- **Data lost:** Check backup folder
+
+## Tips & Tricks
+- Use product images for faster billing
+- Set up table numbers for restaurants
+- Export reports regularly
+- Keep backups of your data

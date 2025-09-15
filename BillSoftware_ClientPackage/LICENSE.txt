@@ -1,0 +1,33 @@
+# Software License Agreement
+
+## Bill Software - Professional Edition
+Single User License
+
+### License Terms
+1. This software is licensed for use by one business entity
+2. You may install and use the software on multiple computers within your business
+3. You may not distribute, sell, or share this software with other businesses
+4. All rights reserved by the software developer
+
+### Permitted Uses
+- Business billing and inventory management
+- Generating invoices and receipts
+- Managing product catalogs
+- Creating business reports
+- Data backup and restoration
+
+### Restrictions
+- No reverse engineering
+- No redistribution
+- No modification of the software
+- No use beyond licensed scope
+
+### Support
+Technical support is provided for licensed users only.
+
+### Warranty
+Software provided "as is" without warranty.
+
+---
+By using this software, you agree to these terms.
+© 2024 Bill Software. All rights reserved.

@@ -1,2 +1,5 @@
-Pillow>=10.0.0
-
+# Bill Software Dependencies
+Pillow>=9.0.0
+matplotlib>=3.5.0
+pyinstaller>=5.0.0
+cairosvg>=2.5.0

@@ -1,0 +1,7 @@
+=== KITCHEN ORDER - TABLE 1 ===
+Time: 2025-09-15 23:41:17
+
+Items:
+- pizza-2 x 1
+
+=== END ORDER ===

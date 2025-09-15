@@ -1,0 +1,13 @@
+DSS
+deendayal nagar 
+Phone: 7020685839
+
+==== INVOICE ====
+Bill ID: 17
+Date: 2025-09-15 21:32:57
+
+Items:
+- lassi x 1 @ 30.00 = 30.00
+- pizza-2 x 1 @ 320.00 = 320.00
+
+Total: 350.00

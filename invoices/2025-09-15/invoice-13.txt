@@ -1,0 +1,12 @@
+DSS
+deendayal nagar 
+Phone: 7020685839
+
+==== INVOICE ====
+Bill ID: 13
+Date: 2025-09-15 19:23:31
+
+Items:
+- aryan x 1 @ 1.00 = 1.00
+
+Total: 1.00

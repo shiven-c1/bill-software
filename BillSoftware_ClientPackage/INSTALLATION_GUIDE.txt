@@ -1,0 +1,29 @@
+# Installation Guide
+
+## Option 1: Simple Run (Recommended)
+1. Double-click "BillSoftware.exe"
+2. The software will start immediately
+3. No installation required!
+
+## Option 2: Professional Installation
+1. Create a folder: C:\BillSoftware\
+2. Copy BillSoftware.exe to that folder
+3. Create a desktop shortcut
+4. Run from desktop shortcut
+
+## First Time Setup
+1. Start the software
+2. Go to Inventory tab
+3. Add your products
+4. Set up your company details
+5. Start billing!
+
+## Data Storage
+- All data is stored locally on your computer
+- Database file: bill_software.db
+- Invoice files: invoices/ folder
+- Images: images/ folder
+
+## Backup Your Data
+- Copy the entire software folder to backup
+- Your data is always safe and portable

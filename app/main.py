@@ -1,6 +1,6 @@
 import os
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 import csv
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -9,6 +9,52 @@ try:
 except Exception:
     Image = None
     ImageTk = None
+
+try:
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+    from matplotlib.figure import Figure
+    MATPLOTLIB_AVAILABLE = True
+except ImportError:
+    MATPLOTLIB_AVAILABLE = False
+    plt = None
+    FigureCanvasTkAgg = None
+    Figure = None
+
+class ToolTip:
+    """Create a tooltip for a given widget"""
+    def __init__(self, widget, text='widget info'):
+        self.widget = widget
+        self.text = text
+        self.tipwindow = None
+        self.widget.bind('<Enter>', self.enter)
+        self.widget.bind('<Leave>', self.leave)
+
+    def enter(self, event=None):
+        self.showtip()
+
+    def leave(self, event=None):
+        self.hidetip()
+
+    def showtip(self):
+        if self.tipwindow or not self.text:
+            return
+        x, y, cx, cy = self.widget.bbox("insert")
+        x = x + self.widget.winfo_rootx() + 25
+        y = y + cy + self.widget.winfo_rooty() + 25
+        self.tipwindow = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry("+%d+%d" % (x, y))
+        label = tk.Label(tw, text=self.text, justify=tk.LEFT,
+                        background="#ffffe0", relief=tk.SOLID, borderwidth=1,
+                        font=("Segoe UI", 9))
+        label.pack(ipadx=1)
+
+    def hidetip(self):
+        tw = self.tipwindow
+        self.tipwindow = None
+        if tw:
+            tw.destroy()
 
 
 APP_TITLE = "Simple Billing & Inventory"
@@ -24,6 +70,21 @@ def ensure_dirs():
     os.makedirs(INVOICE_DIR, exist_ok=True)
     os.makedirs(BACKUP_DIR, exist_ok=True)
     os.makedirs(IMAGE_DIR, exist_ok=True)
+
+def load_printer_icon():
+    """Load printer icon from PNG file"""
+    try:
+        if Image and ImageTk:
+            # Load printer icon from PNG file
+            icon_path = os.path.join(os.path.dirname(__file__), "..", "images", "printer_icon.png")
+            if os.path.exists(icon_path):
+                img = Image.open(icon_path)
+                # Resize to larger size for better visibility
+                img = img.resize((50, 50), Image.Resampling.LANCZOS)
+                return ImageTk.PhotoImage(img)
+        return None
+    except Exception:
+        return None
 
 
 def get_conn():
@@ -201,6 +262,34 @@ def get_recent_bills(limit: int = 50):
     return rows
 
 
+def get_daily_sales(date_str: str = None):
+    """Get sales for a specific date (YYYY-MM-DD) or today if None"""
+    if date_str is None:
+        date_str = datetime.now().strftime("%Y-%m-%d")
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, created_at, total FROM bills WHERE DATE(created_at) = ? ORDER BY id ASC",
+        (date_str,),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_sales_summary(start_date: str, end_date: str):
+    """Get sales summary between two dates"""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT DATE(created_at) as sale_date, COUNT(*) as bill_count, SUM(total) as total_sales FROM bills WHERE DATE(created_at) BETWEEN ? AND ? GROUP BY DATE(created_at) ORDER BY sale_date DESC",
+        (start_date, end_date),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
 def get_bill_items(bill_id: int):
     conn = get_conn()
     cur = conn.cursor()
@@ -218,6 +307,84 @@ def get_bill_items(bill_id: int):
     conn.close()
     return rows
 
+def get_all_bills():
+    """Get all bills with complete details"""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT id, created_at, total, 
+           (SELECT COUNT(*) FROM bill_items WHERE bill_id = bills.id) as item_count,
+           (SELECT SUM(qty) FROM bill_items WHERE bill_id = bills.id) as total_qty
+           FROM bills ORDER BY id DESC"""
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+def get_comprehensive_bill_items(bill_id: int):
+    """Get comprehensive bill items with product details"""
+    conn = get_conn()
+    cur = conn.cursor()
+    
+    cur.execute(
+        """
+        SELECT bi.id, bi.qty, bi.price, bi.subtotal, 
+               p.id as product_id, p.name, p.stock as current_stock,
+               p.image_path
+        FROM bill_items bi
+        JOIN products p ON p.id = bi.product_id
+        WHERE bi.bill_id = ?
+        ORDER BY bi.id ASC
+        """,
+        (bill_id,),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+def get_sales_analytics():
+    """Get comprehensive sales analytics"""
+    conn = get_conn()
+    cur = conn.cursor()
+    
+    # Total sales summary
+    cur.execute("""
+        SELECT 
+            COUNT(*) as total_bills,
+            SUM(total) as total_revenue,
+            AVG(total) as avg_bill_value,
+            MIN(created_at) as first_sale,
+            MAX(created_at) as last_sale
+        FROM bills
+    """)
+    summary = cur.fetchone()
+    
+    # Top selling products
+    cur.execute("""
+        SELECT p.name, SUM(bi.qty) as total_sold, SUM(bi.subtotal) as total_revenue
+        FROM bill_items bi
+        JOIN products p ON p.id = bi.product_id
+        GROUP BY p.id, p.name
+        ORDER BY total_sold DESC
+        LIMIT 10
+    """)
+    top_products = cur.fetchall()
+    
+    # Daily sales trend (last 30 days)
+    cur.execute("""
+        SELECT DATE(created_at) as sale_date, 
+               COUNT(*) as bill_count, 
+               SUM(total) as daily_revenue
+        FROM bills 
+        WHERE created_at >= date('now', '-30 days')
+        GROUP BY DATE(created_at)
+        ORDER BY sale_date DESC
+    """)
+    daily_trend = cur.fetchall()
+    
+    conn.close()
+    return summary, top_products, daily_trend
+
 
 def save_invoice_text(bill_id: int):
     rows = get_bill_items(bill_id)
@@ -225,7 +392,11 @@ def save_invoice_text(bill_id: int):
     if not bills:
         return None
     bill = bills[0]
-    filepath = os.path.join(INVOICE_DIR, f"invoice-{bill_id}.txt")
+    # Create date-based folder structure
+    bill_date = datetime.strptime(bill["created_at"], "%Y-%m-%d %H:%M:%S").strftime("%Y-%m-%d")
+    date_folder = os.path.join(INVOICE_DIR, bill_date)
+    os.makedirs(date_folder, exist_ok=True)
+    filepath = os.path.join(date_folder, f"invoice-{bill_id}.txt")
     # Load company profile
     company = load_settings()
     lines = []
@@ -316,18 +487,21 @@ class App(ttk.Frame):
         self.build_header()
 
         self.notebook = ttk.Notebook(self)
-        self.notebook.pack(fill=tk.BOTH, expand=True)
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
         self.inventory_tab = ttk.Frame(self.notebook)
         self.billing_tab = ttk.Frame(self.notebook)
+        self.tables_tab = ttk.Frame(self.notebook)
         self.reports_tab = ttk.Frame(self.notebook)
 
-        self.notebook.add(self.inventory_tab, text="Inventory")
-        self.notebook.add(self.billing_tab, text="Billing")
-        self.notebook.add(self.reports_tab, text="Reports")
+        self.notebook.add(self.inventory_tab, text="📦 Inventory", padding=[10, 8])
+        self.notebook.add(self.billing_tab, text="🧾 Billing", padding=[10, 8])
+        self.notebook.add(self.tables_tab, text="🍽️ Tables", padding=[10, 8])
+        self.notebook.add(self.reports_tab, text="📊 Reports", padding=[10, 8])
 
         self.build_inventory_tab()
         self.build_billing_tab()
+        self.build_tables_tab()
         self.build_reports_tab()
         self.build_menu()
         self.build_statusbar()
@@ -344,21 +518,236 @@ class App(ttk.Frame):
         style.configure("TLabel", font=self.base_font)
         style.configure("Treeview", font=self.base_font, rowheight=26)
         style.configure("Treeview.Heading", font=self.heading_font)
+        
+        # Tab styling
+        style.configure("TNotebook", tabposition="n")
+        style.configure("TNotebook.Tab", padding=[15, 10], font=("Segoe UI", 11, "bold"), width=12)
+        style.map("TNotebook.Tab", 
+                 background=[("selected", "#2b74ff"), ("active", "#e3f2fd"), ("pressed", "#2b74ff")],
+                 foreground=[("selected", "white"), ("active", "#1976d2"), ("pressed", "white")],
+                 relief=[("pressed", "flat"), ("!pressed", "flat")],
+                 borderwidth=[("pressed", 0), ("!pressed", 0)],
+                 focuscolor="none")
+        
+        # Custom button styles
+        style.configure("Success.TButton", foreground="white", background="#4CAF50")
+        style.configure("Danger.TButton", foreground="white", background="#f44336")
+        style.configure("Info.TButton", foreground="white", background="#2196F3")
+        style.configure("Product.TFrame", relief="raised", borderwidth=1)
 
     def build_header(self):
-        header = tk.Frame(self, bg="#2b74ff")
+        header = tk.Frame(self, bg="#2b74ff", height=80)
         header.pack(fill=tk.X)
-        tk.Label(header, text="Simple Billing & Inventory", font=self.title_font, fg="white", bg="#2b74ff").pack(anchor=tk.W, padx=12, pady=(10, 0))
-        tk.Label(header, text="Manage products, generate invoices, and view reports — easy!", font=self.subtitle_font, fg="white", bg="#2b74ff").pack(anchor=tk.W, padx=12, pady=(0, 10))
+        header.pack_propagate(False)
+        
+        # Main content frame
+        content_frame = tk.Frame(header, bg="#2b74ff")
+        content_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+        
+        # Left side - Title and description
+        left_frame = tk.Frame(content_frame, bg="#2b74ff")
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        tk.Label(left_frame, text="🏪 Professional Billing Software", 
+                font=("Segoe UI", 20, "bold"), fg="white", bg="#2b74ff").pack(anchor=tk.W)
+        tk.Label(left_frame, text="Complete Inventory & Restaurant Management Solution", 
+                font=("Segoe UI", 12), fg="#e3f2fd", bg="#2b74ff").pack(anchor=tk.W, pady=(2, 0))
+        
+        # Right side - Status, version, and help
+        right_frame = tk.Frame(content_frame, bg="#2b74ff")
+        right_frame.pack(side=tk.RIGHT)
+        
+        # Help button
+        help_btn = tk.Button(right_frame, text="❓ Help", command=self.show_help,
+                           font=("Segoe UI", 10, "bold"), fg="white", bg="#1976D2",
+                           relief=tk.FLAT, padx=15, pady=5, cursor="hand2")
+        help_btn.pack(anchor=tk.E, pady=(0, 5))
+        ToolTip(help_btn, "Click to open the user guide and help documentation")
+        
+        self.status_label = tk.Label(right_frame, text="🟢 System Ready", 
+                                   font=("Segoe UI", 11, "bold"), fg="#4CAF50", bg="#2b74ff")
+        self.status_label.pack(anchor=tk.E)
+        
+        version_label = tk.Label(right_frame, text="Version 2.0 Professional", 
+                               font=("Segoe UI", 9), fg="#e3f2fd", bg="#2b74ff")
+        version_label.pack(anchor=tk.E, pady=(2, 0))
 
     def build_statusbar(self):
-        self.status_var = tk.StringVar(value="Ready")
-        bar = tk.Label(self, textvariable=self.status_var, bd=1, relief=tk.SUNKEN, anchor=tk.W)
+        self.status_var = tk.StringVar(value="🟢 System Ready - All modules loaded successfully")
+        bar = tk.Frame(self, bg="#f5f5f5", height=25)
         bar.pack(fill=tk.X, side=tk.BOTTOM)
+        bar.pack_propagate(False)
+        
+        # Status text
+        status_label = tk.Label(bar, textvariable=self.status_var, 
+                              font=("Segoe UI", 9), fg="#333333", bg="#f5f5f5")
+        status_label.pack(side=tk.LEFT, padx=10, pady=5)
+        
+        # Right side info
+        info_frame = tk.Frame(bar, bg="#f5f5f5")
+        info_frame.pack(side=tk.RIGHT, padx=10, pady=5)
+        
+        # Current time
+        self.time_var = tk.StringVar()
+        time_label = tk.Label(info_frame, textvariable=self.time_var, 
+                            font=("Segoe UI", 9), fg="#666666", bg="#f5f5f5")
+        time_label.pack(side=tk.RIGHT)
+        
+        # Update time
+        self.update_time()
 
-    def set_status(self, text: str):
+    def update_time(self):
+        """Update the current time in status bar"""
+        if hasattr(self, "time_var"):
+            current_time = datetime.now().strftime("%H:%M:%S")
+            self.time_var.set(f"🕐 {current_time}")
+        # Schedule next update
+        self.after(1000, self.update_time)
+
+    def set_status(self, text: str, status_type="info"):
+        """Set status message with different types"""
         if hasattr(self, "status_var"):
-            self.status_var.set(text)
+            icons = {
+                "info": "ℹ️",
+                "success": "✅", 
+                "warning": "⚠️",
+                "error": "❌",
+                "loading": "⏳"
+            }
+            icon = icons.get(status_type, "ℹ️")
+            self.status_var.set(f"{icon} {text}")
+
+    def show_help(self):
+        """Show help dialog with user guide"""
+        help_window = tk.Toplevel(self)
+        help_window.title("📚 Help & User Guide")
+        help_window.geometry("800x600")
+        help_window.resizable(True, True)
+        
+        # Main frame
+        main_frame = ttk.Frame(help_window)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+        
+        # Title
+        title_label = ttk.Label(main_frame, text="📚 Professional Billing Software - User Guide", 
+                               font=("Segoe UI", 16, "bold"))
+        title_label.pack(pady=(0, 20))
+        
+        # Create notebook for different help sections
+        help_notebook = ttk.Notebook(main_frame)
+        help_notebook.pack(fill=tk.BOTH, expand=True)
+        
+        # Getting Started tab
+        getting_started = ttk.Frame(help_notebook)
+        help_notebook.add(getting_started, text="🚀 Getting Started")
+        
+        getting_started_text = tk.Text(getting_started, wrap=tk.WORD, font=("Segoe UI", 10), 
+                                     padx=10, pady=10, bg="#f8f9fa")
+        getting_started_text.pack(fill=tk.BOTH, expand=True)
+        
+        getting_started_content = """
+🏪 Welcome to Professional Billing Software!
+
+This software helps you manage your business with:
+• 📦 Inventory Management
+• 🧾 Billing & Invoicing  
+• 🍽️ Restaurant Table Management
+• 📊 Sales Reports & Analytics
+
+QUICK START GUIDE:
+
+1. 📦 INVENTORY TAB:
+   • Add your products with names, prices, and stock
+   • Upload product images for better identification
+   • Search and filter products easily
+   • Export/Import data for backup
+
+2. 🧾 BILLING TAB:
+   • Click on product images to add to cart
+   • Generate professional invoices
+   • Print bills directly to thermal printer
+   • Remove items from cart as needed
+
+3. 🍽️ TABLES TAB:
+   • Manage restaurant tables (1-8)
+   • Add orders to specific tables
+   • Generate bills for each table
+   • Print kitchen orders
+
+4. 📊 REPORTS TAB:
+   • View daily sales reports
+   • See all bills and transactions
+   • Click on any bill to see details
+   • Export reports to CSV
+
+TIPS:
+• Use the search bar to quickly find products
+• Hover over buttons to see helpful tooltips
+• All data is automatically saved
+• Check the status bar for system messages
+        """
+        
+        getting_started_text.insert(tk.END, getting_started_content)
+        getting_started_text.config(state=tk.DISABLED)
+        
+        # Features tab
+        features = ttk.Frame(help_notebook)
+        help_notebook.add(features, text="✨ Features")
+        
+        features_text = tk.Text(features, wrap=tk.WORD, font=("Segoe UI", 10), 
+                              padx=10, pady=10, bg="#f8f9fa")
+        features_text.pack(fill=tk.BOTH, expand=True)
+        
+        features_content = """
+🎯 KEY FEATURES:
+
+📦 INVENTORY MANAGEMENT:
+• Add, edit, delete products
+• Product images support
+• Stock tracking
+• Search and filter
+• CSV import/export
+• Duplicate detection
+
+🧾 BILLING SYSTEM:
+• Visual product selection
+• Real-time cart calculation
+• Professional invoice generation
+• Thermal printer support
+• Invoice preview
+• Automatic numbering
+
+🍽️ RESTAURANT MANAGEMENT:
+• 8 table management system
+• Order tracking per table
+• Kitchen order printing
+• Table status indicators
+• Direct bill generation
+• Order history
+
+📊 REPORTING & ANALYTICS:
+• Daily sales reports
+• Complete transaction history
+• Bill details viewer
+• CSV export
+• Sales analytics
+• Date-based filtering
+
+🔧 TECHNICAL FEATURES:
+• SQLite database
+• Automatic backups
+• Error handling
+• Data validation
+• Professional UI/UX
+• Cross-platform support
+        """
+        
+        features_text.insert(tk.END, features_content)
+        features_text.config(state=tk.DISABLED)
+        
+        # Close button
+        close_btn = ttk.Button(main_frame, text="✅ Close Help", command=help_window.destroy)
+        close_btn.pack(pady=(10, 0))
 
     def build_menu(self):
         menubar = tk.Menu(self.master)
@@ -382,70 +771,207 @@ class App(ttk.Frame):
         settings_menu.add_command(label="Company Profile", command=self.open_company_profile)
         menubar.add_cascade(label="Settings", menu=settings_menu)
 
-    # Inventory Tab
+    # Inventory Tab - Professional Design
     def build_inventory_tab(self):
-        form = ttk.LabelFrame(self.inventory_tab, text="Add / Edit Product")
-        form.pack(fill=tk.X, padx=10, pady=10)
+        # Header with search and actions
+        header_frame = ttk.Frame(self.inventory_tab)
+        header_frame.pack(fill=tk.X, padx=15, pady=15)
+        
+        # Search bar
+        search_frame = ttk.Frame(header_frame)
+        search_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Label(search_frame, text="🔍 Search Products:", font=("Segoe UI", 11, "bold")).pack(side=tk.LEFT)
+        self.var_search = tk.StringVar()
+        search_entry = ttk.Entry(search_frame, textvariable=self.var_search, width=35, font=("Segoe UI", 10))
+        search_entry.pack(side=tk.LEFT, padx=(15, 0))
+        search_entry.bind("<KeyRelease>", lambda e: self.refresh_products())
+        
+        # Action buttons
+        actions_frame = ttk.Frame(header_frame)
+        actions_frame.pack(side=tk.RIGHT)
+        
+        refresh_btn = ttk.Button(actions_frame, text="🔄 Refresh", command=self.refresh_products)
+        refresh_btn.pack(side=tk.LEFT, padx=(0, 8))
+        ToolTip(refresh_btn, "Refresh the products list to see latest changes")
+        
+        export_btn = ttk.Button(actions_frame, text="📤 Export", command=self.export_products_csv)
+        export_btn.pack(side=tk.LEFT, padx=(0, 8))
+        ToolTip(export_btn, "Export all products to a CSV file for backup")
+        
+        import_btn = ttk.Button(actions_frame, text="📥 Import", command=self.import_products_csv)
+        import_btn.pack(side=tk.LEFT)
+        ToolTip(import_btn, "Import products from a CSV file")
 
+        # Main content frame
+        content_frame = ttk.Frame(self.inventory_tab)
+        content_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=(0, 15))
+        
+        # Left side - Product Form
+        form_frame = ttk.LabelFrame(content_frame, text="📝 Product Details")
+        form_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
+        
+        # Form fields
         self.var_pid = tk.StringVar()
         self.var_name = tk.StringVar()
         self.var_price = tk.StringVar()
         self.var_stock = tk.StringVar()
         self.var_image_path = tk.StringVar()
 
-        row = ttk.Frame(form)
-        row.pack(fill=tk.X, padx=10, pady=5)
-        ttk.Label(row, text="Name:").pack(side=tk.LEFT)
-        ttk.Entry(row, textvariable=self.var_name, width=40).pack(side=tk.LEFT, padx=5)
+        # Product name
+        name_frame = ttk.Frame(form_frame)
+        name_frame.pack(fill=tk.X, padx=20, pady=12)
+        ttk.Label(name_frame, text="📦 Product Name:", font=("Segoe UI", 11, "bold")).pack(anchor=tk.W)
+        name_entry = ttk.Entry(name_frame, textvariable=self.var_name, font=("Segoe UI", 10))
+        name_entry.pack(fill=tk.X, pady=(8, 0))
 
-        row2 = ttk.Frame(form)
-        row2.pack(fill=tk.X, padx=10, pady=5)
-        ttk.Label(row2, text="Price:").pack(side=tk.LEFT)
-        ttk.Entry(row2, textvariable=self.var_price, width=10).pack(side=tk.LEFT, padx=5)
-        ttk.Label(row2, text="Stock:").pack(side=tk.LEFT)
-        ttk.Entry(row2, textvariable=self.var_stock, width=10).pack(side=tk.LEFT, padx=5)
+        # Price and Stock
+        price_stock_frame = ttk.Frame(form_frame)
+        price_stock_frame.pack(fill=tk.X, padx=20, pady=12)
+        
+        # Price
+        price_frame = ttk.Frame(price_stock_frame)
+        price_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 15))
+        ttk.Label(price_frame, text="💰 Price (₹):", font=("Segoe UI", 11, "bold")).pack(anchor=tk.W)
+        price_entry = ttk.Entry(price_frame, textvariable=self.var_price, font=("Segoe UI", 10))
+        price_entry.pack(fill=tk.X, pady=(8, 0))
+        
+        # Stock
+        stock_frame = ttk.Frame(price_stock_frame)
+        stock_frame.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(15, 0))
+        ttk.Label(stock_frame, text="📊 Stock Quantity:", font=("Segoe UI", 11, "bold")).pack(anchor=tk.W)
+        stock_entry = ttk.Entry(stock_frame, textvariable=self.var_stock, font=("Segoe UI", 10))
+        stock_entry.pack(fill=tk.X, pady=(8, 0))
 
-        row3 = ttk.Frame(form)
-        row3.pack(fill=tk.X, padx=10, pady=5)
-        ttk.Label(row3, text="Image:").pack(side=tk.LEFT)
-        ttk.Entry(row3, textvariable=self.var_image_path, width=50).pack(side=tk.LEFT, padx=5)
-        ttk.Button(row3, text="Choose...", command=self.on_choose_image).pack(side=tk.LEFT)
+        # Image selection
+        image_frame = ttk.Frame(form_frame)
+        image_frame.pack(fill=tk.X, padx=20, pady=12)
+        ttk.Label(image_frame, text="🖼️ Product Image:", font=("Segoe UI", 11, "bold")).pack(anchor=tk.W)
+        
+        image_input_frame = ttk.Frame(image_frame)
+        image_input_frame.pack(fill=tk.X, pady=(8, 0))
+        image_entry = ttk.Entry(image_input_frame, textvariable=self.var_image_path, font=("Segoe UI", 9))
+        image_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(image_input_frame, text="📁 Choose", command=self.on_choose_image).pack(side=tk.RIGHT, padx=(15, 0))
 
-        preview_row = ttk.Frame(form)
-        preview_row.pack(fill=tk.X, padx=10, pady=5)
-        self.image_preview_label = ttk.Label(preview_row, text="No image selected")
-        self.image_preview_label.pack(side=tk.LEFT)
+        # Image preview
+        preview_frame = ttk.Frame(form_frame)
+        preview_frame.pack(fill=tk.X, padx=20, pady=12)
+        ttk.Label(preview_frame, text="👁️ Preview:", font=("Segoe UI", 11, "bold")).pack(anchor=tk.W)
+        self.image_preview_label = ttk.Label(preview_frame, text="No image selected", 
+                                           font=("Segoe UI", 9), foreground="gray")
+        self.image_preview_label.pack(pady=(8, 0))
 
-        btns = ttk.Frame(form)
-        btns.pack(fill=tk.X, padx=10, pady=5)
-        ttk.Button(btns, text="Add New", command=self.on_add_product).pack(side=tk.LEFT)
-        ttk.Button(btns, text="Update", command=self.on_update_product).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btns, text="Delete", command=self.on_delete_product).pack(side=tk.LEFT)
-        ttk.Button(btns, text="Clear", command=self.clear_product_form).pack(side=tk.LEFT, padx=5)
+        # Action buttons
+        buttons_frame = ttk.Frame(form_frame)
+        buttons_frame.pack(fill=tk.X, padx=20, pady=20)
+        
+        # Button row 1
+        btn_row1 = ttk.Frame(buttons_frame)
+        btn_row1.pack(fill=tk.X, pady=(0, 8))
+        
+        add_btn = ttk.Button(btn_row1, text="➕ Add New Product", command=self.on_add_product, 
+                  style="Success.TButton")
+        add_btn.pack(side=tk.LEFT, padx=(0, 10))
+        ToolTip(add_btn, "Add a new product to your inventory")
+        
+        update_btn = ttk.Button(btn_row1, text="✏️ Update Product", command=self.on_update_product, 
+                  style="Info.TButton")
+        update_btn.pack(side=tk.LEFT)
+        ToolTip(update_btn, "Update the selected product's information")
+        
+        # Button row 2
+        btn_row2 = ttk.Frame(buttons_frame)
+        btn_row2.pack(fill=tk.X, pady=(0, 0))
+        
+        delete_btn = ttk.Button(btn_row2, text="🗑️ Delete Product", command=self.on_delete_product, 
+                  style="Danger.TButton")
+        delete_btn.pack(side=tk.LEFT, padx=(0, 10))
+        ToolTip(delete_btn, "Delete the selected product (cannot be undone)")
+        
+        clear_btn = ttk.Button(btn_row2, text="🧹 Clear Form", command=self.clear_product_form)
+        clear_btn.pack(side=tk.LEFT)
+        ToolTip(clear_btn, "Clear all form fields to start fresh")
 
-        search_row = ttk.Frame(self.inventory_tab)
-        search_row.pack(fill=tk.X, padx=10, pady=5)
-        ttk.Label(search_row, text="Search:").pack(side=tk.LEFT)
-        self.var_search = tk.StringVar()
-        search_entry = ttk.Entry(search_row, textvariable=self.var_search)
-        search_entry.pack(side=tk.LEFT, padx=5)
-        search_entry.bind("<KeyRelease>", lambda e: self.refresh_products())
-
+        # Right side - Products List
+        list_frame = ttk.LabelFrame(content_frame, text="📋 Products List")
+        list_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(10, 0))
+        
+        # Products tree
         self.products_tree = ttk.Treeview(
-            self.inventory_tab,
-            columns=("id", "name", "price", "stock"),
+            list_frame,
+            columns=("id", "name", "price", "stock", "image"),
             show="headings",
-            height=12,
+            height=15,
         )
-        for col, text in [("id", "ID"), ("name", "Name"), ("price", "Price"), ("stock", "Stock")]:
+        
+        # Configure columns
+        columns_config = [
+            ("id", "ID", 60),
+            ("name", "Product Name", 220),
+            ("price", "Price (₹)", 110),
+            ("stock", "Stock", 90),
+            ("image", "Image", 110)
+        ]
+        
+        for col, text, width in columns_config:
             self.products_tree.heading(col, text=text)
-            self.products_tree.column(col, width=110 if col != "name" else 360)
-        self.products_tree.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+            self.products_tree.column(col, width=width, anchor="center" if col != "name" else "w")
+        
+        self.products_tree.pack(fill=tk.BOTH, expand=True, padx=15, pady=15)
         self.products_tree.bind("<<TreeviewSelect>>", self.on_select_product)
         self.products_tree.tag_configure("even", background="#f5f7fb")
         self.products_tree.tag_configure("odd", background="#ffffff")
 
         self.refresh_products()
+
+    def export_products_csv(self):
+        """Export products to CSV"""
+        try:
+            from tkinter import filedialog
+            filename = filedialog.asksaveasfilename(
+                defaultextension=".csv",
+                filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+                title="Export Products to CSV"
+            )
+            if filename:
+                products = list_products("")
+                with open(filename, 'w', newline='', encoding='utf-8') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(['ID', 'Name', 'Price', 'Stock', 'Image Path'])
+                    for p in products:
+                        writer.writerow([p['id'], p['name'], p['price'], p['stock'], p.get('image_path', '')])
+                messagebox.showinfo("Success", f"Products exported to {filename}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to export: {e}")
+
+    def import_products_csv(self):
+        """Import products from CSV"""
+        try:
+            from tkinter import filedialog
+            filename = filedialog.askopenfilename(
+                filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+                title="Import Products from CSV"
+            )
+            if filename:
+                with open(filename, 'r', encoding='utf-8') as f:
+                    reader = csv.DictReader(f)
+                    imported_count = 0
+                    for row in reader:
+                        try:
+                            add_product(
+                                row['Name'],
+                                float(row['Price']),
+                                int(row['Stock']),
+                                row.get('Image Path', '')
+                            )
+                            imported_count += 1
+                        except Exception as e:
+                            print(f"Error importing row {row}: {e}")
+                            continue
+                messagebox.showinfo("Success", f"Imported {imported_count} products")
+                self.refresh_products()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to import: {e}")
 
     def clear_product_form(self):
         self.var_pid.set("")
@@ -460,7 +986,7 @@ class App(ttk.Frame):
         if not sel:
             return
         item = self.products_tree.item(sel[0])
-        pid, name, price, stock = item["values"]
+        pid, name, price, stock, image_status = item["values"]
         self.var_pid.set(pid)
         self.var_name.set(name)
         self.var_price.set(str(price))
@@ -482,33 +1008,82 @@ class App(ttk.Frame):
         term = self.var_search.get().strip() if hasattr(self, "var_search") else ""
         for idx, r in enumerate(list_products(term)):
             tag = "even" if idx % 2 == 0 else "odd"
-            self.products_tree.insert("", tk.END, values=(r["id"], r["name"], r["price"], r["stock"]), tags=(tag,))
+            # Check if image exists - use dictionary access instead of .get()
+            image_path = r["image_path"] if "image_path" in r.keys() else None
+            image_status = "✅ Yes" if image_path and os.path.exists(image_path) else "❌ No"
+            self.products_tree.insert("", tk.END, values=(
+                r["id"], 
+                r["name"], 
+                f"₹{r['price']:.2f}", 
+                r["stock"],
+                image_status
+            ), tags=(tag,))
 
     def on_add_product(self):
         name = self.var_name.get().strip()
         price = self.var_price.get().strip()
         stock = self.var_stock.get().strip()
+        
+        # Enhanced validation
         if not name or not price or not stock:
-            messagebox.showwarning("Missing", "Please fill Name, Price and Stock")
+            self.set_status("Please fill in all required fields", "error")
+            messagebox.showwarning("⚠️ Missing Information", "Please fill in all required fields:\n• Product Name\n• Price (₹)\n• Stock Quantity")
             return
+        
         try:
             price_val = float(price)
             stock_val = int(stock)
             if price_val < 0 or stock_val < 0:
-                raise ValueError
-        except Exception:
-            messagebox.showerror("Invalid", "Price must be a number, Stock must be a whole number")
+                raise ValueError("Negative values not allowed")
+            if price_val > 999999:
+                raise ValueError("Price too high (maximum: ₹999,999)")
+            if stock_val > 99999:
+                raise ValueError("Stock too high (maximum: 99,999)")
+        except ValueError as e:
+            self.set_status(f"Invalid input: {str(e)}", "error")
+            messagebox.showerror("❌ Invalid Input", f"Please check your input:\n{str(e)}")
             return
-        img_path = self.copy_image_to_library(self.var_image_path.get().strip()) if self.var_image_path.get().strip() else None
-        ok, err = add_product(name, price_val, stock_val, img_path)
-        if ok:
-            self.clear_product_form()
-            self.refresh_products()
-            # update billing choices/gallery immediately
-            self.refresh_product_choices()
-            messagebox.showinfo("Saved", "Product added")
-        else:
-            messagebox.showerror("Error", f"Could not add product. {err}")
+        
+        # Check for duplicate product name
+        try:
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM products WHERE name = ?", (name,))
+            if cur.fetchone():
+                conn.close()
+                self.set_status(f"Product '{name}' already exists", "warning")
+                messagebox.showwarning("⚠️ Duplicate Product", f"Product '{name}' already exists.\nPlease use a different name or update the existing product.")
+                return
+            conn.close()
+        except Exception as e:
+            self.set_status(f"Database error: {str(e)}", "error")
+            messagebox.showerror("❌ Database Error", f"Could not check for duplicates:\n{str(e)}")
+            return
+        
+        # Process image
+        img_path = None
+        if self.var_image_path.get().strip():
+            try:
+                img_path = self.copy_image_to_library(self.var_image_path.get().strip())
+            except Exception as e:
+                self.set_status(f"Image processing error: {str(e)}", "warning")
+                messagebox.showwarning("⚠️ Image Warning", f"Could not process image:\n{str(e)}\n\nProduct will be added without image.")
+        
+        # Add product
+        try:
+            ok, err = add_product(name, price_val, stock_val, img_path)
+            if ok:
+                self.clear_product_form()
+                self.refresh_products()
+                self.refresh_billing_products()
+                self.set_status(f"✅ Product '{name}' added successfully!", "success")
+                messagebox.showinfo("✅ Success", f"Product '{name}' has been added to your inventory!\n\nPrice: ₹{price_val:.2f}\nStock: {stock_val} units")
+            else:
+                self.set_status(f"Failed to add product: {err}", "error")
+                messagebox.showerror("❌ Error", f"Could not add product:\n{err}")
+        except Exception as e:
+            self.set_status(f"Unexpected error: {str(e)}", "error")
+            messagebox.showerror("❌ Unexpected Error", f"An unexpected error occurred:\n{str(e)}")
 
     def on_update_product(self):
         if not self.var_pid.get():
@@ -529,7 +1104,7 @@ class App(ttk.Frame):
         ok, err = update_product(int(self.var_pid.get()), name, price_val, stock_val, img_path)
         if ok:
             self.refresh_products()
-            self.refresh_product_choices()
+            self.refresh_billing_products()
             messagebox.showinfo("Updated", "Product updated")
         else:
             messagebox.showerror("Error", f"Could not update. {err}")
@@ -583,199 +1158,213 @@ class App(ttk.Frame):
         delete_product(int(self.var_pid.get()))
         self.clear_product_form()
         self.refresh_products()
-        self.refresh_product_choices()
+        self.refresh_billing_products()
         messagebox.showinfo("Deleted", "Product deleted")
 
     def on_tab_changed(self, event=None):
         try:
             tab = self.notebook.tab(self.notebook.select(), 'text')
             if tab == "Billing":
-                self.refresh_product_choices()
+                self.refresh_billing_products()
+            elif tab == "Tables":
+                self.refresh_tables()
             elif tab == "Reports":
                 self.refresh_reports()
         except Exception:
             pass
 
-    # Billing Tab
+    # Billing Tab - Clean and Simple like Tables Tab
     def build_billing_tab(self):
-        top = ttk.LabelFrame(self.billing_tab, text="Add Item to Cart")
-        top.pack(fill=tk.X, padx=10, pady=10)
-
-        # Top actions so important buttons are always visible
-        actions = ttk.Frame(self.billing_tab)
-        actions.pack(fill=tk.X, padx=10, pady=4)
-        ttk.Button(actions, text="Refresh", command=self.refresh_product_choices).pack(side=tk.LEFT)
-        ttk.Button(actions, text="Generate Invoice", command=self.on_checkout).pack(side=tk.RIGHT)
-        ttk.Button(actions, text="Remove Selected", command=self.on_remove_cart_item).pack(side=tk.RIGHT, padx=6)
-
-        self.var_bill_product = tk.StringVar()
-        self.var_bill_qty = tk.StringVar(value="1")
-
-        row = ttk.Frame(top)
-        row.pack(fill=tk.X, padx=10, pady=5)
-        ttk.Label(row, text="Search Product:").pack(side=tk.LEFT)
+        # Header with search and actions
+        header_frame = ttk.Frame(self.billing_tab)
+        header_frame.pack(fill=tk.X, padx=15, pady=15)
+        
+        # Search bar
+        search_frame = ttk.Frame(header_frame)
+        search_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Label(search_frame, text="🔍 Search Products:", font=("Segoe UI", 11, "bold")).pack(side=tk.LEFT)
         self.var_bill_search = tk.StringVar()
-        entry = ttk.Entry(row, textvariable=self.var_bill_search, width=40)
-        entry.pack(side=tk.LEFT, padx=5)
-        entry.bind("<KeyRelease>", lambda e: self.refresh_product_choices())
+        search_entry = ttk.Entry(search_frame, textvariable=self.var_bill_search, width=35, font=("Segoe UI", 10))
+        search_entry.pack(side=tk.LEFT, padx=(15, 0))
+        search_entry.bind("<KeyRelease>", lambda e: self.refresh_billing_products())
+        
+        # Action buttons
+        actions_frame = ttk.Frame(header_frame)
+        actions_frame.pack(side=tk.RIGHT)
+        ttk.Button(actions_frame, text="🔄 Refresh", command=self.refresh_billing_products).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(actions_frame, text="🗑️ Remove Selected", command=self.on_remove_cart_item, 
+                  style="Danger.TButton").pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(actions_frame, text="🧾 Generate Bill", command=self.on_checkout, 
+                  style="Success.TButton").pack(side=tk.LEFT)
 
-        self.product_combo = ttk.Combobox(top, textvariable=self.var_bill_product, state="readonly", width=50)
-        self.product_combo.pack(fill=tk.X, padx=10)
-
-        row2 = ttk.Frame(top)
-        row2.pack(fill=tk.X, padx=10, pady=5)
-        ttk.Label(row2, text="Quantity:").pack(side=tk.LEFT)
-        ttk.Entry(row2, textvariable=self.var_bill_qty, width=10).pack(side=tk.LEFT, padx=5)
-        ttk.Button(row2, text="🛒 Add to Cart", command=self.on_add_to_cart).pack(side=tk.LEFT)
-
-        # Image gallery
-        gallery_frame = ttk.LabelFrame(self.billing_tab, text="Products (click to add)")
-        gallery_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
-        self.gallery_canvas = tk.Canvas(gallery_frame, height=180)
-        self.gallery_scroll_x = ttk.Scrollbar(gallery_frame, orient=tk.HORIZONTAL, command=self.gallery_canvas.xview)
-        self.gallery_scroll_y = ttk.Scrollbar(gallery_frame, orient=tk.VERTICAL, command=self.gallery_canvas.yview)
-        self.gallery_inner = ttk.Frame(self.gallery_canvas)
-        self.gallery_inner.bind(
+        # Main content frame
+        content_frame = ttk.Frame(self.billing_tab)
+        content_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=(0, 15))
+        
+        # Left side - Product Gallery
+        products_frame = ttk.LabelFrame(content_frame, text="📦 Products - Click to Add")
+        products_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+        
+        # Product gallery with vertical scroll
+        self.billing_gallery_canvas = tk.Canvas(products_frame, bg="white")
+        self.billing_gallery_scroll = ttk.Scrollbar(products_frame, orient=tk.VERTICAL, command=self.billing_gallery_canvas.yview)
+        self.billing_gallery_inner = ttk.Frame(self.billing_gallery_canvas)
+        
+        self.billing_gallery_inner.bind(
             "<Configure>",
-            lambda e: self.gallery_canvas.configure(scrollregion=self.gallery_canvas.bbox("all")),
+            lambda e: self.billing_gallery_canvas.configure(scrollregion=self.billing_gallery_canvas.bbox("all"))
         )
-        self.gallery_canvas.create_window((0, 0), window=self.gallery_inner, anchor="nw")
-        self.gallery_canvas.configure(xscrollcommand=self.gallery_scroll_x.set, yscrollcommand=self.gallery_scroll_y.set)
-        self.gallery_canvas.pack(fill=tk.BOTH, expand=True, padx=5, pady=(0,4))
-        self.gallery_scroll_x.pack(fill=tk.X, side=tk.BOTTOM)
-        self.gallery_scroll_y.pack(fill=tk.Y, side=tk.RIGHT)
+        
+        self.billing_gallery_canvas.create_window((0, 0), window=self.billing_gallery_inner, anchor="nw")
+        self.billing_gallery_canvas.configure(yscrollcommand=self.billing_gallery_scroll.set)
+        
+        self.billing_gallery_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
+        self.billing_gallery_scroll.pack(side=tk.RIGHT, fill=tk.Y, pady=10)
 
-        # Up/Down buttons
-        nav = ttk.Frame(self.billing_tab)
-        nav.pack(fill=tk.X, padx=10, pady=(0,6))
-        ttk.Button(nav, text="▲ Up", command=lambda: self.gallery_canvas.yview_scroll(-1, "units")).pack(side=tk.LEFT)
-        ttk.Button(nav, text="▼ Down", command=lambda: self.gallery_canvas.yview_scroll(1, "units")).pack(side=tk.LEFT, padx=6)
-
-        # Cart
+        # Right side - Cart/Order
+        cart_frame = ttk.LabelFrame(content_frame, text="🛒 Selected Items")
+        cart_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(10, 0))
+        
+        # Cart tree
         self.cart_tree = ttk.Treeview(
-            self.billing_tab,
+            cart_frame,
             columns=("name", "price", "qty", "subtotal"),
             show="headings",
-            height=12,
+            height=15,
         )
-        for col, text in [("name", "Name"), ("price", "Price"), ("qty", "Qty"), ("subtotal", "Subtotal")]:
+        for col, text in [("name", "Product"), ("price", "Price"), ("qty", "Qty"), ("subtotal", "Total")]:
             self.cart_tree.heading(col, text=text)
-            self.cart_tree.column(col, width=180 if col == "name" else 140)
+            self.cart_tree.column(col, width=130)
         self.cart_tree.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         self.cart_tree.tag_configure("even", background="#f5f7fb")
         self.cart_tree.tag_configure("odd", background="#ffffff")
 
-        bottom = ttk.Frame(self.billing_tab)
-        bottom.pack(fill=tk.X, padx=10, pady=5)
-        self.var_total = tk.StringVar(value="0.00")
-        ttk.Label(bottom, text="Total:").pack(side=tk.LEFT)
-        ttk.Label(bottom, textvariable=self.var_total, font=("Segoe UI", 12, "bold")).pack(side=tk.LEFT)
-        ttk.Button(bottom, text="Remove Selected", command=self.on_remove_cart_item, width=18).pack(side=tk.RIGHT)
-        ttk.Button(bottom, text="Generate Invoice", command=self.on_checkout, width=18).pack(side=tk.RIGHT, padx=6)
+        # Bottom total and actions
+        bottom_frame = ttk.Frame(self.billing_tab)
+        bottom_frame.pack(fill=tk.X, padx=15, pady=15)
+        
+        # Total display
+        total_frame = ttk.Frame(bottom_frame)
+        total_frame.pack(side=tk.LEFT)
+        ttk.Label(total_frame, text="💰 Total:", font=("Segoe UI", 13, "bold")).pack(side=tk.LEFT)
+        self.var_total = tk.StringVar(value="₹0.00")
+        ttk.Label(total_frame, textvariable=self.var_total, font=("Segoe UI", 18, "bold"), 
+                 foreground="#2b74ff").pack(side=tk.LEFT, padx=15)
+        
+        # Action buttons
+        action_buttons_frame = ttk.Frame(bottom_frame)
+        action_buttons_frame.pack(side=tk.RIGHT)
+        ttk.Button(action_buttons_frame, text="🗑️ Remove Selected", command=self.on_remove_cart_item, 
+                  style="Danger.TButton").pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(action_buttons_frame, text="🧾 Generate Bill", command=self.on_checkout, 
+                  style="Success.TButton").pack(side=tk.LEFT)
 
         self.cart_items = []  # list of dicts
-        self.refresh_product_choices()
+        self.refresh_billing_products()
 
-    def refresh_product_choices(self):
+    def refresh_billing_products(self):
+        """Refresh the billing product gallery"""
         term = self.var_bill_search.get().strip() if hasattr(self, "var_bill_search") else ""
         rows = list_products(term)
-        display = [f"{r['id']} - {r['name']} (₹{r['price']:.2f}, stock {r['stock']})" for r in rows]
-        self.product_combo["values"] = display
-        if display:
-            self.product_combo.current(0)
-        self.refresh_gallery(rows)
+        self.refresh_billing_gallery(rows)
 
-    def recalc_total(self):
-        total = sum(i["price"] * i["qty"] for i in self.cart_items)
-        self.var_total.set(f"{total:.2f}")
-
-    def on_add_to_cart(self):
-        sel = self.product_combo.get()
-        if not sel:
-            messagebox.showwarning("Select", "Please choose a product")
-            return
-        try:
-            pid = int(sel.split(" - ")[0])
-        except Exception:
-            messagebox.showerror("Error", "Could not read selected product")
-            return
-        qty_str = self.var_bill_qty.get().strip()
-        try:
-            qty = int(qty_str)
-            if qty <= 0:
-                raise ValueError
-        except Exception:
-            messagebox.showerror("Invalid", "Quantity must be a positive whole number")
-            return
-        # fetch product
-        prod = [r for r in list_products("") if r["id"] == pid]
-        if not prod:
-            messagebox.showerror("Error", "Product not found")
-            return
-        prod = prod[0]
-        if qty > prod["stock"]:
-            messagebox.showwarning("Stock", f"Only {prod['stock']} in stock")
-            return
-        # if already in cart, increase qty
-        for item in self.cart_items:
-            if item["product_id"] == pid:
-                if item["qty"] + qty > prod["stock"]:
-                    messagebox.showwarning("Stock", f"Only {prod['stock']} in stock")
-                    return
-                item["qty"] += qty
-                break
-        else:
-            self.cart_items.append({
-                "product_id": pid,
-                "name": prod["name"],
-                "price": float(prod["price"]),
-                "qty": qty,
-            })
-        self.refresh_cart()
-
-    def refresh_gallery(self, products):
-        for w in self.gallery_inner.winfo_children():
+    def refresh_billing_gallery(self, products):
+        """Refresh the billing product gallery with images"""
+        # Clear existing widgets
+        for w in self.billing_gallery_inner.winfo_children():
             w.destroy()
+        
+        if not products:
+            ttk.Label(self.billing_gallery_inner, text="No products found", 
+                     font=("Segoe UI", 12), foreground="gray").pack(pady=20)
+            return
+        
         # Show a hint if Pillow isn't installed
         if not Image:
-            ttk.Label(self.gallery_inner, text="Install Pillow to show images: pip install pillow").grid(row=0, column=0, padx=8, pady=8)
+            ttk.Label(self.billing_gallery_inner, text="Install Pillow to show images: pip install pillow", 
+                     font=("Segoe UI", 10), foreground="orange").pack(pady=20)
             return
-        thumb_size = (96, 96)
-        self._gallery_images = []
-        col = 0
-        for p in products:
-            frame = ttk.Frame(self.gallery_inner, padding=6)
-            frame.grid(row=0, column=col, padx=4, pady=4, sticky="n")
-            img_label = ttk.Label(frame)
+        
+        thumb_size = (80, 80)
+        self._billing_gallery_images = []
+        
+        # Create product grid (3 columns)
+        for idx, p in enumerate(products):
+            row = idx // 3
+            col = idx % 3
+            
+            # Product frame
+            product_frame = ttk.Frame(self.billing_gallery_inner, relief="raised", borderwidth=1)
+            product_frame.grid(row=row, column=col, padx=8, pady=8, sticky="nsew")
+            product_frame.configure(style="Product.TFrame")
+            
+            # Image frame
+            img_frame = ttk.Frame(product_frame)
+            img_frame.pack(pady=5)
+            
+            # Product image
+            img_label = ttk.Label(img_frame, cursor="hand2")
             img = None
-            if Image and p["image_path"] and os.path.exists(p["image_path"]):
+            if p["image_path"] and os.path.exists(p["image_path"]):
                 try:
                     pil = Image.open(p["image_path"]).convert("RGB")
                     pil.thumbnail(thumb_size)
                     img = ImageTk.PhotoImage(pil)
                 except Exception:
                     img = None
+            
             if img is not None:
                 img_label.configure(image=img)
                 img_label.image = img
-                self._gallery_images.append(img)
+                self._billing_gallery_images.append(img)
             else:
-                img_label.configure(text="(No Image)", width=12)
+                img_label.configure(text="📦", font=("Segoe UI", 24), width=8, height=3)
+            
             img_label.pack()
-            ttk.Label(frame, text=p["name"], width=14).pack()
-            ttk.Label(frame, text=f"₹{p['price']:.2f}").pack()
-            ttk.Button(frame, text="Add", command=lambda pid=p["id"]: self.add_product_id_to_cart(pid)).pack(pady=(2,0))
-            col += 1
+            
+            # Product name
+            name_label = ttk.Label(product_frame, text=p["name"], font=("Segoe UI", 9, "bold"), 
+                                 wraplength=100, justify="center")
+            name_label.pack(pady=2)
+            
+            # Price
+            price_label = ttk.Label(product_frame, text=f"₹{p['price']:.2f}", 
+                                  font=("Segoe UI", 10, "bold"), foreground="#2b74ff")
+            price_label.pack(pady=1)
+            
+            # Stock
+            stock_label = ttk.Label(product_frame, text=f"Stock: {p['stock']}", 
+                                  font=("Segoe UI", 8), foreground="gray")
+            stock_label.pack(pady=1)
+            
+            # Click to add functionality
+            def make_click_handler(pid):
+                def on_click(event):
+                    self.add_product_to_cart(pid)
+                return on_click
+            
+            # Bind click events to all widgets in the product frame
+            for widget in [product_frame, img_label, name_label, price_label, stock_label]:
+                widget.bind("<Button-1>", make_click_handler(p["id"]))
+                widget.bind("<Enter>", lambda e, w=product_frame: w.configure(relief="solid", borderwidth=2))
+                widget.bind("<Leave>", lambda e, w=product_frame: w.configure(relief="raised", borderwidth=1))
+        
+        # Configure grid weights
+        for i in range(3):
+            self.billing_gallery_inner.columnconfigure(i, weight=1)
 
-    def add_product_id_to_cart(self, pid: int):
-        self.var_bill_qty.set("1")
+    def add_product_to_cart(self, pid: int):
+        """Add product to cart by clicking on product image"""
         prod = [r for r in list_products("") if r["id"] == pid]
         if not prod:
             return
         prod = prod[0]
-        if 1 > prod["stock"]:
-            messagebox.showwarning("Stock", f"Only {prod['stock']} in stock")
+        
+        if prod["stock"] <= 0:
+            messagebox.showwarning("Stock", f"Out of stock: {prod['name']}")
             return
+        
+        # Check if already in cart
         for item in self.cart_items:
             if item["product_id"] == pid:
                 if item["qty"] + 1 > prod["stock"]:
@@ -790,7 +1379,13 @@ class App(ttk.Frame):
                 "price": float(prod["price"]),
                 "qty": 1,
             })
+        
         self.refresh_cart()
+
+    def recalc_total(self):
+        total = sum(i["price"] * i["qty"] for i in self.cart_items)
+        self.var_total.set(f"₹{total:.2f}")
+
 
     def refresh_cart(self):
         for i in self.cart_tree.get_children():
@@ -798,7 +1393,7 @@ class App(ttk.Frame):
         for idx, item in enumerate(self.cart_items):
             subtotal = item["price"] * item["qty"]
             tag = "even" if idx % 2 == 0 else "odd"
-            self.cart_tree.insert("", tk.END, values=(item["name"], f"{item['price']:.2f}", item["qty"], f"{subtotal:.2f}"), tags=(tag,))
+            self.cart_tree.insert("", tk.END, values=(item["name"], f"₹{item['price']:.2f}", item["qty"], f"₹{subtotal:.2f}"), tags=(tag,))
         self.recalc_total()
 
     def on_remove_cart_item(self):
@@ -823,7 +1418,7 @@ class App(ttk.Frame):
         self.cart_items = []
         self.refresh_cart()
         self.refresh_products()  # stock changed
-        self.refresh_product_choices()
+        self.refresh_billing_products()
         self.refresh_reports()
         if path:
             self.show_invoice_preview(bill_id, path)
@@ -900,61 +1495,1440 @@ class App(ttk.Frame):
         except Exception as e:
             messagebox.showerror("Print Error", str(e))
 
+    # Tables Tab
+    def build_tables_tab(self):
+        # Table status tracking - 8 tables with more space
+        self.current_table = 0
+        self.table_orders = {i+1: [] for i in range(8)}  # Store orders for each table
+        self.table_status = {i+1: "empty" for i in range(8)}  # empty, ordering, ready, served
+
+        # Professional header
+        header_frame = ttk.Frame(self.tables_tab, style="Header.TFrame")
+        header_frame.pack(fill=tk.X, padx=10, pady=(10, 5))
+        
+        title_label = ttk.Label(header_frame, text="🍽️ Restaurant Table Management", 
+                               font=("Segoe UI", 16, "bold"), style="Header.TLabel")
+        title_label.pack(side=tk.LEFT)
+        
+        # Quick stats
+        stats_frame = ttk.Frame(header_frame)
+        stats_frame.pack(side=tk.RIGHT)
+        
+        self.var_total_tables = tk.StringVar(value="Tables: 8")
+        self.var_active_orders = tk.StringVar(value="Active: 0")
+        
+        ttk.Label(stats_frame, textvariable=self.var_total_tables, font=("Segoe UI", 10)).pack(side=tk.LEFT, padx=5)
+        ttk.Label(stats_frame, textvariable=self.var_active_orders, font=("Segoe UI", 10)).pack(side=tk.LEFT, padx=5)
+
+        # Main container for table view
+        self.tables_main_frame = ttk.Frame(self.tables_tab)
+        self.tables_main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        # Menu view frame (initially hidden)
+        self.menu_view_frame = ttk.Frame(self.tables_tab)
+        
+        self.build_tables_view()
+
+    def build_tables_view(self):
+        """Build the main tables view with 12 tables"""
+        # Clear existing widgets
+        for widget in self.tables_main_frame.winfo_children():
+            widget.destroy()
+        
+        # Restaurant Layout
+        layout_frame = ttk.Frame(self.tables_main_frame)
+        layout_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=15)
+        
+        # A/C Section
+        ac_frame = tk.LabelFrame(layout_frame, text="🍽️ A/C Section - Tables 1-8", 
+                                font=("Segoe UI", 15, "bold"), fg="#1976D2")
+        ac_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        
+        # Create systematic table grid (2 rows x 4 columns for 8 tables)
+        self.table_buttons = []
+        
+        # Add row labels
+        for row in range(2):
+            row_label = tk.Label(ac_frame, text=f"Row {row + 1}", 
+                                font=("Segoe UI", 12, "bold"), fg="#424242")
+            row_label.grid(row=row*2, column=0, padx=8, pady=8, sticky="w")
+        
+        # Add column labels
+        for col in range(4):
+            col_label = tk.Label(ac_frame, text=f"Col {col + 1}", 
+                                font=("Segoe UI", 12, "bold"), fg="#424242")
+            col_label.grid(row=0, column=col+1, padx=8, pady=8, sticky="s")
+        
+        for i in range(8):
+            table_num = i + 1
+            row = (i // 4) * 2 + 1  # Skip label rows
+            col = (i % 4) + 1       # Skip label column
+            
+            # Systematic table frame - bigger with more space
+            table_frame = tk.Frame(ac_frame, width=220, height=240, 
+                                 relief="solid", bd=3, bg="#FFFFFF")
+            table_frame.grid(row=row, column=col, padx=12, pady=12, sticky="nsew")
+            table_frame.grid_propagate(False)
+            
+            # Table header with systematic layout - bigger
+            header_frame = tk.Frame(table_frame, height=45, bg=self.get_table_color(table_num))
+            header_frame.pack(fill=tk.X)
+            header_frame.pack_propagate(False)
+            
+            # Table number - centered and systematic - bigger
+            table_label = tk.Label(
+                header_frame, 
+                text=f"Table {table_num:02d}",
+                font=("Segoe UI", 14, "bold"),
+                bg=self.get_table_color(table_num),
+                fg="#1976D2"
+            )
+            table_label.pack(side=tk.LEFT, padx=12, pady=8)
+            
+            # Status indicator - bigger
+            status_label = tk.Label(
+                header_frame,
+                text=self.get_status_emoji(table_num),
+                font=("Segoe UI", 16),
+                bg=self.get_table_color(table_num),
+                fg="#424242"
+            )
+            status_label.pack(side=tk.RIGHT, padx=12, pady=8)
+            
+            # Remove button - systematic placement - bigger
+            remove_btn = tk.Button(
+                header_frame,
+                text="✕",
+                font=("Segoe UI", 12, "bold"),
+                command=lambda t=table_num: self.clear_table_order(t),
+                bg="#F44336",
+                fg="white",
+                relief="raised",
+                bd=2,
+                width=2,
+                height=1,
+                cursor="hand2"
+            )
+            remove_btn.pack(side=tk.RIGHT, padx=4, pady=8)
+            remove_btn.bind("<Enter>", lambda e, b=remove_btn: b.configure(bg="#D32F2F"))
+            remove_btn.bind("<Leave>", lambda e, b=remove_btn: b.configure(bg="#F44336"))
+            
+            # Main table button area with status text - bigger
+            btn = tk.Button(
+                table_frame, 
+                text=self.get_status_text(table_num),
+                command=lambda t=table_num: self.open_table_menu(t),
+                font=("Segoe UI", 12, "bold"),
+                bg=self.get_table_color(table_num),
+                fg="#1976D2",
+                relief="raised",
+                bd=3,
+                cursor="hand2"
+            )
+            btn.pack(fill=tk.BOTH, expand=True, padx=4, pady=2)
+            btn.bind("<Enter>", lambda e, b=btn, t=table_num: b.configure(bg=self.get_hover_color(t)))
+            btn.bind("<Leave>", lambda e, b=btn, t=table_num: b.configure(bg=self.get_table_color(table_num)))
+            
+            # Status icons frame - bigger
+            icons_frame = tk.Frame(table_frame, height=30, bg=self.get_table_color(table_num))
+            icons_frame.pack(side=tk.BOTTOM, fill=tk.X)
+            icons_frame.pack_propagate(False)
+            
+            # Add status icons
+            self.add_table_icons(icons_frame, table_num)
+            
+            # Systematic buttons layout - bigger with more space
+            buttons_frame = tk.Frame(table_frame, height=80)
+            buttons_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=4, pady=3)
+            buttons_frame.pack_propagate(False)
+            
+            # Generate Bill button - bigger design
+            bill_btn = tk.Button(
+                buttons_frame,
+                text="GENERATE BILL",
+                font=("Segoe UI", 9, "bold"),
+                command=lambda t=table_num: self.generate_table_bill_direct(t),
+                bg="#E0E0E0",
+                fg="#9E9E9E",
+                relief="raised",
+                bd=2,
+                height=2,
+                cursor="hand2",
+                state="disabled"
+            )
+            bill_btn.pack(fill=tk.X, pady=(3, 2))
+            bill_btn.bind("<Enter>", lambda e, b=bill_btn: b.configure(bg="#BDBDBD") if b['state'] == 'normal' else None)
+            bill_btn.bind("<Leave>", lambda e, b=bill_btn: b.configure(bg="#4CAF50") if b['state'] == 'normal' else None)
+            
+            # View Bill button - bigger design
+            view_bill_btn = tk.Button(
+                buttons_frame,
+                text="VIEW BILL",
+                font=("Segoe UI", 9, "bold"),
+                command=lambda t=table_num: self.view_table_bill_direct(t),
+                bg="#E0E0E0",
+                fg="#9E9E9E",
+                relief="raised",
+                bd=2,
+                height=2,
+                cursor="hand2",
+                state="disabled"
+            )
+            view_bill_btn.pack(fill=tk.X, pady=(2, 3))
+            view_bill_btn.bind("<Enter>", lambda e, b=view_bill_btn: b.configure(bg="#BDBDBD") if b['state'] == 'normal' else None)
+            view_bill_btn.bind("<Leave>", lambda e, b=view_bill_btn: b.configure(bg="#2196F3") if b['state'] == 'normal' else None)
+            
+            self.table_buttons.append((table_frame, btn, icons_frame, header_frame, bill_btn, view_bill_btn))
+        
+        # Configure grid weights for systematic layout
+        for i in range(5):  # 4 columns + 1 label column
+            ac_frame.columnconfigure(i, weight=1)
+        for i in range(5):  # 2 rows * 2 + 1 label row
+            ac_frame.rowconfigure(i, weight=1)
+
+    def open_table_menu(self, table_num):
+        """Open menu view for selected table"""
+        self.current_table = table_num
+        self.table_status[table_num] = "ordering"
+        self.update_table_display()
+        
+        # Hide tables view and show menu view
+        self.tables_main_frame.pack_forget()
+        self.menu_view_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        self.build_menu_view(table_num)
+
+    def build_menu_view(self, table_num):
+        """Build menu view for selected table"""
+        # Clear existing widgets
+        for widget in self.menu_view_frame.winfo_children():
+            widget.destroy()
+        
+        # Header with back button and table info
+        header_frame = ttk.Frame(self.menu_view_frame)
+        header_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        # Back to tables button - colorful
+        back_btn = tk.Button(header_frame, text="🔙 Back to Tables", 
+                            command=self.back_to_tables,
+                            font=("Segoe UI", 10, "bold"),
+                            bg="#FF5722", fg="white", relief="raised", bd=2,
+                            cursor="hand2", height=2)
+        back_btn.pack(side=tk.LEFT, padx=5, pady=5)
+        back_btn.bind("<Enter>", lambda e, b=back_btn: b.configure(bg="#E64A19"))
+        back_btn.bind("<Leave>", lambda e, b=back_btn: b.configure(bg="#FF5722"))
+        
+        # Table info
+        table_info_frame = ttk.Frame(header_frame)
+        table_info_frame.pack(side=tk.RIGHT)
+        
+        ttk.Label(table_info_frame, text=f"Table {table_num}", 
+                 font=("Segoe UI", 16, "bold")).pack()
+        
+        # Order summary
+        order = self.table_orders[table_num]
+        item_count = len(order)
+        total = sum(item["price"] * item["qty"] for item in order)
+        
+        ttk.Label(table_info_frame, text=f"Items: {item_count} | Total: ₹{total:.2f}", 
+                 font=("Segoe UI", 10)).pack()
+        
+        # Main content frame
+        content_frame = ttk.Frame(self.menu_view_frame)
+        content_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        # Left side - Product menu
+        menu_frame = ttk.LabelFrame(content_frame, text="Menu - Click to Add Items")
+        menu_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
+        
+        # Search bar
+        search_frame = ttk.Frame(menu_frame)
+        search_frame.pack(fill=tk.X, padx=10, pady=5)
+        ttk.Label(search_frame, text="Search:").pack(side=tk.LEFT)
+        self.var_table_search = tk.StringVar()
+        search_entry = ttk.Entry(search_frame, textvariable=self.var_table_search, width=30)
+        search_entry.pack(side=tk.LEFT, padx=5)
+        search_entry.bind("<KeyRelease>", lambda e: self.refresh_table_products())
+        
+        # Product gallery
+        gallery_frame = ttk.Frame(menu_frame)
+        gallery_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        # Canvas with scrollbars
+        canvas_frame = ttk.Frame(gallery_frame)
+        canvas_frame.pack(fill=tk.BOTH, expand=True)
+        
+        self.table_gallery_canvas = tk.Canvas(canvas_frame, height=400)
+        
+        # Scrollbars
+        h_scroll = ttk.Scrollbar(canvas_frame, orient=tk.HORIZONTAL, command=self.table_gallery_canvas.xview)
+        v_scroll = ttk.Scrollbar(canvas_frame, orient=tk.VERTICAL, command=self.table_gallery_canvas.yview)
+        
+        self.table_gallery_canvas.configure(xscrollcommand=h_scroll.set, yscrollcommand=v_scroll.set)
+        
+        # Inner frame for images
+        self.table_gallery_inner = ttk.Frame(self.table_gallery_canvas)
+        self.table_gallery_inner.bind(
+            "<Configure>",
+            lambda e: self.table_gallery_canvas.configure(scrollregion=self.table_gallery_canvas.bbox("all")),
+        )
+        self.table_gallery_canvas.create_window((0, 0), window=self.table_gallery_inner, anchor="nw")
+        
+        # Pack everything
+        self.table_gallery_canvas.grid(row=0, column=0, sticky="nsew")
+        h_scroll.grid(row=1, column=0, sticky="ew")
+        v_scroll.grid(row=0, column=1, sticky="ns")
+        
+        canvas_frame.columnconfigure(0, weight=1)
+        canvas_frame.rowconfigure(0, weight=1)
+        
+        # Right side - Current order
+        order_frame = ttk.LabelFrame(content_frame, text=f"Table {table_num} Order")
+        order_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(5, 0))
+        
+        # Order tree
+        self.table_order_tree = ttk.Treeview(
+            order_frame,
+            columns=("name", "price", "qty", "subtotal"),
+            show="headings",
+            height=15,
+        )
+        for col, text in [("name", "Item"), ("price", "Price"), ("qty", "Qty"), ("subtotal", "Subtotal")]:
+            self.table_order_tree.heading(col, text=text)
+            self.table_order_tree.column(col, width=120)
+        
+        # Scrollbar for order tree
+        order_scroll = ttk.Scrollbar(order_frame, orient=tk.VERTICAL, command=self.table_order_tree.yview)
+        self.table_order_tree.configure(yscrollcommand=order_scroll.set)
+        
+        self.table_order_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=5)
+        order_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        self.table_order_tree.tag_configure("even", background="#f5f7fb")
+        self.table_order_tree.tag_configure("odd", background="#ffffff")
+        
+        # Bind events
+        self.table_order_tree.bind("<Double-1>", self.remove_selected_table_item)
+        self.table_order_tree.bind("<Delete>", self.remove_selected_table_item)
+        self.table_order_tree.bind("<BackSpace>", self.remove_selected_table_item)
+        
+        # Order actions
+        actions_frame = ttk.Frame(order_frame)
+        actions_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        self.var_table_total = tk.StringVar(value="0.00")
+        ttk.Label(actions_frame, text="Total:").pack(side=tk.LEFT)
+        ttk.Label(actions_frame, textvariable=self.var_table_total, font=("Segoe UI", 12, "bold")).pack(side=tk.LEFT, padx=5)
+        
+        # Action buttons - colorful and modern
+        remove_btn = tk.Button(actions_frame, text="🗑️ Remove Selected", 
+                              command=self.remove_selected_table_item,
+                              font=("Segoe UI", 9, "bold"),
+                              bg="#F44336", fg="white", relief="raised", bd=2,
+                              cursor="hand2", height=2)
+        remove_btn.pack(side=tk.RIGHT, padx=3)
+        remove_btn.bind("<Enter>", lambda e, b=remove_btn: b.configure(bg="#D32F2F"))
+        remove_btn.bind("<Leave>", lambda e, b=remove_btn: b.configure(bg="#F44336"))
+        
+        clear_btn = tk.Button(actions_frame, text="🧹 Clear Order", 
+                             command=self.clear_table_order,
+                             font=("Segoe UI", 9, "bold"),
+                             bg="#FF9800", fg="white", relief="raised", bd=2,
+                             cursor="hand2", height=2)
+        clear_btn.pack(side=tk.RIGHT, padx=3)
+        clear_btn.bind("<Enter>", lambda e, b=clear_btn: b.configure(bg="#F57C00"))
+        clear_btn.bind("<Leave>", lambda e, b=clear_btn: b.configure(bg="#FF9800"))
+        
+        generate_btn = tk.Button(actions_frame, text="💳 Generate Bill", 
+                                command=self.generate_table_bill,
+                                font=("Segoe UI", 9, "bold"),
+                                bg="#4CAF50", fg="white", relief="raised", bd=2,
+                                cursor="hand2", height=2)
+        generate_btn.pack(side=tk.RIGHT, padx=3)
+        generate_btn.bind("<Enter>", lambda e, b=generate_btn: b.configure(bg="#45a049"))
+        generate_btn.bind("<Leave>", lambda e, b=generate_btn: b.configure(bg="#4CAF50"))
+        
+        # Refresh the menu
+        self.refresh_table_products()
+        self.refresh_table_order()
+
+    def back_to_tables(self):
+        """Go back to tables view"""
+        self.menu_view_frame.pack_forget()
+        self.tables_main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        self.update_table_display()
+
+    def get_table_color(self, table_num):
+        """Get color based on table status"""
+        status = self.table_status.get(table_num, "empty")
+        if status == "empty":
+            return "#E8F5E8"  # Light green
+        elif status == "ordering":
+            return "#E3F2FD"  # Light blue
+        elif status == "ready":
+            return "#FFF3E0"  # Light orange
+        elif status == "served":
+            return "#F3E5F5"  # Light purple
+        return "#E8F5E8"
+
+    def get_hover_color(self, table_num):
+        """Get hover color for table"""
+        status = self.table_status.get(table_num, "empty")
+        if status == "empty":
+            return "#C8E6C9"  # Medium green
+        elif status == "ordering":
+            return "#BBDEFB"  # Medium blue
+        elif status == "ready":
+            return "#FFE0B2"  # Medium orange
+        elif status == "served":
+            return "#E1BEE7"  # Medium purple
+        return "#C8E6C9"
+
+    def get_status_emoji(self, table_num):
+        """Get status emoji for table header"""
+        status = self.table_status.get(table_num, "empty")
+        if status == "empty":
+            return ""
+        elif status == "ordering":
+            return "📝"
+        elif status == "ready":
+            return "✅"
+        elif status == "served":
+            return "🍽️"
+        return ""
+
+    def get_status_text(self, table_num):
+        """Get status text for table button"""
+        status = self.table_status.get(table_num, "empty")
+        order = self.table_orders[table_num]
+        item_count = len(order)
+        
+        if status == "empty":
+            return "VIEW"
+        elif status == "ordering":
+            return f"ORDERING\n({item_count} items)"
+        elif status == "ready":
+            return f"READY\n({item_count} items)"
+        elif status == "served":
+            return f"SERVED\n({item_count} items)"
+        return "VIEW"
+
+    def add_table_icons(self, parent, table_num):
+        """Add status icons to table - only for kitchen bill functionality"""
+        status = self.table_status.get(table_num, "empty")
+        
+        # Only show printer button for tables with orders (kitchen bill functionality)
+        if status in ["ordering", "ready", "served"]:
+            # Centered PRINT text in the middle of orange button - properly centered
+            printer_btn = tk.Button(
+                parent, 
+                text="PRINT",
+                font=("Segoe UI", 12, "bold"),
+                command=lambda: self.print_table_order(table_num),
+                bg="#FF9800", fg="white", relief="raised", bd=2, width=6, height=2,
+                cursor="hand2"
+            )
+            printer_btn.pack(expand=True, pady=2)
+            printer_btn.bind("<Enter>", lambda e, b=printer_btn: b.configure(bg="#F57C00"))
+            printer_btn.bind("<Leave>", lambda e, b=printer_btn: b.configure(bg="#FF9800"))
+
+    def update_table_display(self):
+        """Update all table displays with current status"""
+        for i, (frame, btn, icons_frame, header_frame, bill_btn, view_bill_btn) in enumerate(self.table_buttons):
+            table_num = i + 1
+            color = self.get_table_color(table_num)
+            btn.configure(bg=color)
+            header_frame.configure(bg=color)
+            icons_frame.configure(bg=color)
+            
+            # Update header label color
+            for widget in header_frame.winfo_children():
+                if isinstance(widget, tk.Label):
+                    widget.configure(bg=color)
+            
+            # Update buttons based on table status
+            order = self.table_orders[table_num]
+            if order:
+                bill_btn.configure(state="normal", bg="#4CAF50", fg="white", text="GENERATE BILL")
+                view_bill_btn.configure(state="normal", bg="#2196F3", fg="white", text="VIEW BILL")
+                # Rebind hover events for enabled state
+                bill_btn.bind("<Enter>", lambda e, b=bill_btn: b.configure(bg="#45a049"))
+                bill_btn.bind("<Leave>", lambda e, b=bill_btn: b.configure(bg="#4CAF50"))
+                view_bill_btn.bind("<Enter>", lambda e, b=view_bill_btn: b.configure(bg="#1976D2"))
+                view_bill_btn.bind("<Leave>", lambda e, b=view_bill_btn: b.configure(bg="#2196F3"))
+            else:
+                bill_btn.configure(state="disabled", bg="#E0E0E0", fg="#9E9E9E", text="GENERATE BILL")
+                view_bill_btn.configure(state="disabled", bg="#E0E0E0", fg="#9E9E9E", text="VIEW BILL")
+                # Remove hover events for disabled state
+                bill_btn.unbind("<Enter>")
+                bill_btn.unbind("<Leave>")
+                view_bill_btn.unbind("<Enter>")
+                view_bill_btn.unbind("<Leave>")
+            
+            # Clear and rebuild icons
+            for widget in icons_frame.winfo_children():
+                widget.destroy()
+            self.add_table_icons(icons_frame, table_num)
+
+    def select_table(self, table_num):
+        # This method is now replaced by open_table_menu
+        self.open_table_menu(table_num)
+
+    def refresh_table_products(self):
+        term = self.var_table_search.get().strip() if hasattr(self, "var_table_search") else ""
+        rows = list_products(term)
+        
+        # Refresh image gallery only
+        self.refresh_table_gallery(rows)
+
+    def refresh_table_gallery(self, products):
+        """Refresh the product image gallery for tables"""
+        # Clear previous widgets
+        for w in self.table_gallery_inner.winfo_children():
+            w.destroy()
+        
+        if not Image:
+            ttk.Label(self.table_gallery_inner, text="Install Pillow to show images: pip install pillow").grid(row=0, column=0, padx=8, pady=8)
+            return
+        
+        thumb_size = (60, 60)  # Smaller images
+        self._table_gallery_images = []
+        
+        # Arrange in a grid: 6 columns, multiple rows for more products per row
+        cols_per_row = 6
+        row = 0
+        col = 0
+        
+        for p in products:
+            frame = ttk.Frame(self.table_gallery_inner, padding=2)
+            frame.grid(row=row, column=col, padx=1, pady=1, sticky="nw")
+            
+            # Make the entire frame clickable
+            img_label = ttk.Label(frame, cursor="hand2")
+            img = None
+            if p["image_path"] and os.path.exists(p["image_path"]):
+                try:
+                    pil = Image.open(p["image_path"]).convert("RGB")
+                    pil.thumbnail(thumb_size)
+                    img = ImageTk.PhotoImage(pil)
+                except Exception:
+                    img = None
+            
+            if img is not None:
+                img_label.configure(image=img)
+                img_label.image = img
+                self._table_gallery_images.append(img)
+            else:
+                img_label.configure(text="(No Image)", width=8)
+            
+            # Bind click to add product
+            img_label.bind("<Button-1>", lambda e, pid=p["id"]: self.add_product_id_to_table(pid))
+            img_label.pack()
+            
+            # Smaller text labels
+            name_label = ttk.Label(frame, text=p["name"][:10], width=10, wraplength=80, font=("Segoe UI", 8))
+            name_label.pack()
+            name_label.bind("<Button-1>", lambda e, pid=p["id"]: self.add_product_id_to_table(pid))
+            
+            price_label = ttk.Label(frame, text=f"₹{p['price']:.0f}", font=("Segoe UI", 8, "bold"))
+            price_label.pack()
+            price_label.bind("<Button-1>", lambda e, pid=p["id"]: self.add_product_id_to_table(pid))
+            
+            # Make the entire frame clickable
+            frame.bind("<Button-1>", lambda e, pid=p["id"]: self.add_product_id_to_table(pid))
+            
+            # Move to next position
+            col += 1
+            if col >= cols_per_row:
+                col = 0
+                row += 1
+
+    def add_product_id_to_table(self, pid: int):
+        """Add product directly from image gallery to table order"""
+        if self.current_table == 0:
+            messagebox.showwarning("No Table Selected", "Please select a table first")
+            return
+            
+        prod = [r for r in list_products("") if r["id"] == pid]
+        if not prod:
+            messagebox.showerror("Error", "Product not found")
+            return
+        prod = prod[0]
+        
+        if prod["stock"] <= 0:
+            messagebox.showwarning("Out of Stock", f"{prod['name']} is out of stock")
+            return
+        
+        # Add to table order
+        order = self.table_orders[self.current_table]
+        for item in order:
+            if item["product_id"] == pid:
+                if item["qty"] + 1 > prod["stock"]:
+                    messagebox.showwarning("Stock Limit", f"Only {prod['stock']} units available for {prod['name']}")
+                    return
+                item["qty"] += 1
+                break
+        else:
+            order.append({
+                "product_id": pid,
+                "name": prod["name"],
+                "price": float(prod["price"]),
+                "qty": 1,
+            })
+        
+        # Update table status to ordering
+        self.table_status[self.current_table] = "ordering"
+        self.update_table_display()
+        self.refresh_table_order()
+        
+        # Show success feedback
+        self.show_success_feedback(f"Added {prod['name']} to Table {self.current_table}")
+
+    def add_to_table_order(self):
+        # This method is no longer used since we removed the dropdown
+        # Products are now added via image gallery clicks
+        pass
+
+    def refresh_table_order(self):
+        if self.current_table == 0:
+            # Clear tree and show message
+            for i in self.table_order_tree.get_children():
+                self.table_order_tree.delete(i)
+            self.table_order_tree.insert("", tk.END, values=("No table selected", "", "", ""))
+            self.var_table_total.set("0.00")
+            return
+        
+        # Clear tree
+        for i in self.table_order_tree.get_children():
+            self.table_order_tree.delete(i)
+        
+        # Populate with current table's order
+        order = self.table_orders[self.current_table]
+        total = 0
+        
+        if not order:
+            self.table_order_tree.insert("", tk.END, values=("No items in order", "", "", ""))
+        else:
+            for idx, item in enumerate(order):
+                subtotal = item["price"] * item["qty"]
+                total += subtotal
+                tag = "even" if idx % 2 == 0 else "odd"
+                self.table_order_tree.insert("", tk.END, values=(
+                    item["name"], 
+                    f"₹{item['price']:.2f}", 
+                    item["qty"], 
+                    f"₹{subtotal:.2f}"
+                ), tags=(tag,))
+        
+        self.var_table_total.set(f"₹{total:.2f}")
+
+    def remove_selected_table_item(self, event=None):
+        """Remove selected item from table order (double-click or button)"""
+        if self.current_table == 0:
+            messagebox.showwarning("No Table", "Please select a table first")
+            return
+        
+        sel = self.table_order_tree.selection()
+        if not sel:
+            messagebox.showwarning("No Selection", "Please select an item to remove")
+            return
+        
+        item = self.table_order_tree.item(sel[0])
+        name = item["values"][0]
+        
+        # Remove from table order
+        order = self.table_orders[self.current_table]
+        self.table_orders[self.current_table] = [i for i in order if i["name"] != name]
+        self.refresh_table_order()
+
+    def remove_from_table_order(self):
+        """Legacy method - redirects to remove_selected_table_item"""
+        self.remove_selected_table_item()
+
+    def clear_table_order(self, table_num=None):
+        if table_num is None:
+            table_num = self.current_table
+        
+        if table_num == 0:
+            return
+        
+        if messagebox.askyesno("Clear Order", f"Clear all items from Table {table_num}?"):
+            self.table_orders[table_num] = []
+            self.table_status[table_num] = "empty"
+            if table_num == self.current_table:
+                self.refresh_table_order()
+            self.update_table_display()
+
+    def generate_table_bill_direct(self, table_num):
+        """Generate bill directly from table button"""
+        order = self.table_orders[table_num]
+        if not order:
+            messagebox.showwarning("Empty Order", f"No items in Table {table_num} order")
+            return
+        
+        # Show confirmation with order summary
+        total = sum(item["price"] * item["qty"] for item in order)
+        item_count = sum(item["qty"] for item in order)
+        
+        confirm_msg = f"Generate bill for Table {table_num}?\n\n"
+        confirm_msg += f"Items: {item_count}\n"
+        confirm_msg += f"Total: ₹{total:.2f}\n\n"
+        confirm_msg += "This will create an invoice and clear the table order."
+        
+        if not messagebox.askyesno("Confirm Bill Generation", confirm_msg):
+            return
+        
+        try:
+            # Show loading message
+            loading_label = ttk.Label(self.tables_tab, text="Generating bill...", 
+                                    font=("Segoe UI", 10, "bold"), foreground="blue")
+            loading_label.place(relx=0.5, rely=0.5, anchor="center")
+            self.update()
+            
+            bill_id, total = create_bill(order)
+            path = save_invoice_text(bill_id)
+            
+            # Remove loading message
+            loading_label.destroy()
+            
+            # Clear table after billing - reset to empty state
+            self.table_status[table_num] = "empty"
+            self.table_orders[table_num] = []
+            
+            # Update current table if it's the same
+            if self.current_table == table_num:
+                self.refresh_table_order()
+            
+            self.update_table_display()
+            self.update_active_orders_count()
+            self.refresh_products()  # stock changed
+            self.refresh_billing_products()
+            self.refresh_reports()
+            
+            if path:
+                # Success message
+                success_msg = f"✅ Bill Generated Successfully!\n\n"
+                success_msg += f"Bill ID: {bill_id}\n"
+                success_msg += f"Table: {table_num}\n"
+                success_msg += f"Total: ₹{total:.2f}\n"
+                success_msg += f"Items: {item_count}\n\n"
+                success_msg += f"Invoice saved to:\n{path}"
+                
+                messagebox.showinfo("Bill Generated", success_msg)
+                self.show_invoice_preview(bill_id, path)
+                self.show_success_feedback(f"Table {table_num} bill generated!")
+            else:
+                messagebox.showinfo("Done", f"Table {table_num} bill #{bill_id} saved.")
+        except Exception as e:
+            # Remove loading message if it exists
+            try:
+                loading_label.destroy()
+            except:
+                pass
+            messagebox.showerror("Error", f"Failed to create bill:\n{str(e)}")
+
+    def generate_table_bill(self):
+        if self.current_table == 0:
+            messagebox.showwarning("No Table Selected", "Please select a table first")
+            return
+        
+        order = self.table_orders[self.current_table]
+        if not order:
+            messagebox.showwarning("Empty Order", f"No items in Table {self.current_table} order")
+            return
+        
+        # Show confirmation with order summary
+        total = sum(item["price"] * item["qty"] for item in order)
+        item_count = sum(item["qty"] for item in order)
+        
+        confirm_msg = f"Generate bill for Table {self.current_table}?\n\n"
+        confirm_msg += f"Items: {item_count}\n"
+        confirm_msg += f"Total: ₹{total:.2f}\n\n"
+        confirm_msg += "This will create an invoice and clear the table order."
+        
+        if not messagebox.askyesno("Confirm Bill Generation", confirm_msg):
+            return
+        
+        try:
+            # Show loading message
+            loading_label = ttk.Label(self.tables_tab, text="Generating bill...", 
+                                    font=("Segoe UI", 10, "bold"), foreground="blue")
+            loading_label.place(relx=0.5, rely=0.5, anchor="center")
+            self.update()
+            
+            bill_id, total = create_bill(order)
+            path = save_invoice_text(bill_id)
+            
+            # Remove loading message
+            loading_label.destroy()
+            
+            # Clear table after billing - reset to empty state
+            self.table_status[self.current_table] = "empty"
+            self.table_orders[self.current_table] = []
+            self.refresh_table_order()
+            self.update_table_display()
+            self.update_active_orders_count()
+            self.refresh_products()  # stock changed
+            self.refresh_billing_products()
+            self.refresh_reports()
+            
+            if path:
+                # Success message
+                success_msg = f"✅ Bill Generated Successfully!\n\n"
+                success_msg += f"Bill ID: {bill_id}\n"
+                success_msg += f"Table: {self.current_table}\n"
+                success_msg += f"Total: ₹{total:.2f}\n"
+                success_msg += f"Items: {item_count}\n\n"
+                success_msg += f"Invoice saved to:\n{path}"
+                
+                messagebox.showinfo("Bill Generated", success_msg)
+                self.show_invoice_preview(bill_id, path)
+                self.show_success_feedback(f"Table {self.current_table} bill generated!")
+            else:
+                messagebox.showinfo("Done", f"Table {self.current_table} bill #{bill_id} saved.")
+        except Exception as e:
+            # Remove loading message if it exists
+            try:
+                loading_label.destroy()
+            except:
+                pass
+            messagebox.showerror("Error", f"Failed to create bill:\n{str(e)}")
+
+    def print_table_order(self, table_num):
+        """Print table order (kitchen order)"""
+        order = self.table_orders.get(table_num, [])
+        if not order:
+            messagebox.showwarning("Empty Order", f"Table {table_num} has no items to print")
+            return
+        
+        # Create kitchen order text
+        lines = []
+        lines.append(f"=== KITCHEN ORDER - TABLE {table_num} ===")
+        lines.append(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append("")
+        lines.append("Items:")
+        for item in order:
+            lines.append(f"- {item['name']} x {item['qty']}")
+        lines.append("")
+        lines.append("=== END ORDER ===")
+        
+        # Save to file
+        kitchen_file = os.path.join(INVOICE_DIR, f"kitchen-order-table-{table_num}.txt")
+        with open(kitchen_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+        
+        # Print if possible
+        try:
+            if hasattr(os, "startfile"):
+                os.startfile(kitchen_file, "print")
+                messagebox.showinfo("Printed", f"Kitchen order for Table {table_num} sent to printer")
+            else:
+                messagebox.showinfo("Saved", f"Kitchen order saved to {kitchen_file}")
+        except Exception as e:
+            messagebox.showinfo("Saved", f"Kitchen order saved to {kitchen_file}")
+
+    def view_table_order(self, table_num):
+        """View table order details"""
+        order = self.table_orders.get(table_num, [])
+        if not order:
+            messagebox.showinfo("Empty Order", f"Table {table_num} has no items")
+            return
+        
+        # Create order summary
+        total = sum(item["price"] * item["qty"] for item in order)
+        lines = []
+        lines.append(f"Table {table_num} Order Summary")
+        lines.append("=" * 30)
+        for item in order:
+            subtotal = item["price"] * item["qty"]
+            lines.append(f"{item['name']} x {item['qty']} = ₹{subtotal:.2f}")
+        lines.append("-" * 30)
+        lines.append(f"Total: ₹{total:.2f}")
+        
+        messagebox.showinfo(f"Table {table_num} Order", "\n".join(lines))
+
+    def view_table_bill_direct(self, table_num):
+        """View table bill directly from table button"""
+        order = self.table_orders.get(table_num, [])
+        if not order:
+            messagebox.showinfo(f"Table {table_num}", "No items in order")
+            return
+        
+        # Create a detailed view window
+        view_window = tk.Toplevel(self.master)
+        view_window.title(f"Table {table_num} - Order Details")
+        view_window.geometry("500x400")
+        view_window.resizable(False, False)
+        
+        # Center the window
+        view_window.transient(self.master)
+        view_window.grab_set()
+        
+        # Header
+        header_frame = ttk.Frame(view_window)
+        header_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        ttk.Label(header_frame, text=f"Table {table_num} Order", 
+                 font=("Segoe UI", 16, "bold")).pack()
+        
+        # Order details
+        details_frame = ttk.LabelFrame(view_window, text="Order Items")
+        details_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        # Treeview for order items
+        tree = ttk.Treeview(details_frame, columns=("qty", "price", "subtotal"), show="headings", height=8)
+        tree.heading("#0", text="Item")
+        tree.heading("qty", text="Qty")
+        tree.heading("price", text="Price")
+        tree.heading("subtotal", text="Subtotal")
+        
+        tree.column("#0", width=200)
+        tree.column("qty", width=80)
+        tree.column("price", width=100)
+        tree.column("subtotal", width=100)
+        
+        # Add items to tree
+        total = 0
+        for idx, item in enumerate(order):
+            subtotal = item["price"] * item["qty"]
+            total += subtotal
+            tag = "even" if idx % 2 == 0 else "odd"
+            tree.insert("", tk.END, text=item["name"], 
+                       values=(item["qty"], f"₹{item['price']:.2f}", f"₹{subtotal:.2f}"), 
+                       tags=(tag,))
+        
+        tree.tag_configure("even", background="#f5f7fb")
+        tree.tag_configure("odd", background="#ffffff")
+        
+        # Scrollbar
+        scrollbar = ttk.Scrollbar(details_frame, orient=tk.VERTICAL, command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Total section
+        total_frame = ttk.Frame(view_window)
+        total_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        ttk.Label(total_frame, text=f"Total: ₹{total:.2f}", 
+                 font=("Segoe UI", 14, "bold")).pack(side=tk.LEFT)
+        
+        # Action buttons
+        action_frame = ttk.Frame(view_window)
+        action_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        ttk.Button(action_frame, text="Close", 
+                  command=view_window.destroy).pack(side=tk.RIGHT, padx=5)
+        
+        ttk.Button(action_frame, text="Generate Bill", 
+                  command=lambda: [self.generate_table_bill_direct(table_num), view_window.destroy()]).pack(side=tk.RIGHT, padx=5)
+
+    def refresh_tables(self):
+        if hasattr(self, 'refresh_table_products'):
+            self.refresh_table_products()
+
+    def show_success_feedback(self, message: str):
+        """Show temporary success message"""
+        # Create a temporary label for feedback
+        feedback_label = ttk.Label(self.tables_tab, text=message, 
+                                 font=("Segoe UI", 10, "bold"), 
+                                 foreground="green")
+        feedback_label.place(relx=0.5, rely=0.1, anchor="center")
+        
+        # Remove after 2 seconds
+        self.after(2000, feedback_label.destroy)
+
+    def update_active_orders_count(self):
+        """Update the active orders count in the header"""
+        if hasattr(self, 'var_active_orders'):
+            active_count = sum(1 for status in self.table_status.values() if status in ["ordering", "ready"])
+            self.var_active_orders.set(f"Active: {active_count}")
+
     # Reports Tab
     def build_reports_tab(self):
-        top = ttk.Frame(self.reports_tab)
-        top.pack(fill=tk.X, padx=10, pady=10)
-        ttk.Button(top, text="🔄 Refresh", command=self.refresh_reports).pack(side=tk.LEFT)
+        # Create notebook for different report views
+        self.reports_notebook = ttk.Notebook(self.reports_tab)
+        self.reports_notebook.pack(fill=tk.BOTH, expand=True, padx=15, pady=15)
 
-        self.bills_tree = ttk.Treeview(
-            self.reports_tab,
-            columns=("id", "created", "total"),
+        # Daily Sales Tab
+        self.daily_sales_tab = ttk.Frame(self.reports_notebook)
+        self.reports_notebook.add(self.daily_sales_tab, text="Daily Sales")
+
+        # All Bills Tab
+        self.all_bills_tab = ttk.Frame(self.reports_notebook)
+        self.reports_notebook.add(self.all_bills_tab, text="All Bills")
+
+        self.build_daily_sales_tab()
+        self.build_all_bills_tab()
+
+    def build_daily_sales_tab(self):
+        # Header with date selection and controls
+        header_frame = ttk.Frame(self.daily_sales_tab)
+        header_frame.pack(fill=tk.X, padx=15, pady=15)
+        
+        # Date selection
+        date_frame = ttk.Frame(header_frame)
+        date_frame.pack(side=tk.LEFT)
+        ttk.Label(date_frame, text="📅 Select Date:", font=("Segoe UI", 11, "bold")).pack(side=tk.LEFT)
+        self.var_sales_date = tk.StringVar(value=datetime.now().strftime("%Y-%m-%d"))
+        date_entry = ttk.Entry(date_frame, textvariable=self.var_sales_date, width=15, font=("Segoe UI", 10))
+        date_entry.pack(side=tk.LEFT, padx=10)
+        date_entry.bind("<KeyRelease>", lambda e: self.refresh_daily_sales())
+        
+        # Export button
+        ttk.Button(header_frame, text="📤 Export Daily CSV", command=self.export_daily_csv).pack(side=tk.RIGHT, padx=10)
+
+        # Enhanced summary
+        summary_frame = ttk.LabelFrame(self.daily_sales_tab, text="📊 Daily Summary - Complete Details")
+        summary_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        stats_frame = ttk.Frame(summary_frame)
+        stats_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        self.var_daily_count = tk.StringVar(value="0")
+        self.var_daily_total = tk.StringVar(value="₹0.00")
+        self.var_daily_avg = tk.StringVar(value="₹0.00")
+        self.var_daily_items = tk.StringVar(value="0")
+        
+        ttk.Label(stats_frame, text="Bills:", font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w", padx=5, pady=2)
+        ttk.Label(stats_frame, textvariable=self.var_daily_count, font=("Segoe UI", 10, "bold"), foreground="blue").grid(row=0, column=1, sticky="w", padx=5, pady=2)
+        
+        ttk.Label(stats_frame, text="Total Revenue:", font=("Segoe UI", 10, "bold")).grid(row=0, column=2, sticky="w", padx=20, pady=2)
+        ttk.Label(stats_frame, textvariable=self.var_daily_total, font=("Segoe UI", 10, "bold"), foreground="green").grid(row=0, column=3, sticky="w", padx=5, pady=2)
+        
+        ttk.Label(stats_frame, text="Avg Bill:", font=("Segoe UI", 10, "bold")).grid(row=1, column=0, sticky="w", padx=5, pady=2)
+        ttk.Label(stats_frame, textvariable=self.var_daily_avg, font=("Segoe UI", 10, "bold"), foreground="orange").grid(row=1, column=1, sticky="w", padx=5, pady=2)
+        
+        ttk.Label(stats_frame, text="Total Items:", font=("Segoe UI", 10, "bold")).grid(row=1, column=2, sticky="w", padx=20, pady=2)
+        ttk.Label(stats_frame, textvariable=self.var_daily_items, font=("Segoe UI", 10, "bold"), foreground="purple").grid(row=1, column=3, sticky="w", padx=5, pady=2)
+
+        # Main content frame
+        content_frame = ttk.Frame(self.daily_sales_tab)
+        content_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        # Left side - Daily bills
+        bills_frame = ttk.LabelFrame(content_frame, text="📋 Daily Bills - Complete Details")
+        bills_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
+        
+        self.daily_bills_tree = ttk.Treeview(
+            bills_frame,
+            columns=("id", "time", "total", "items", "qty"),
             show="headings",
-            height=10,
+            height=12,
         )
-        for col, text in [("id", "Bill #"), ("created", "Date"), ("total", "Total")]:
+        for col, text in [("id", "Bill #"), ("time", "Time"), ("total", "Total ₹"), ("items", "Items"), ("qty", "Qty")]:
+            self.daily_bills_tree.heading(col, text=text)
+            self.daily_bills_tree.column(col, width=100)
+        self.daily_bills_tree.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        self.daily_bills_tree.tag_configure("even", background="#f5f7fb")
+        self.daily_bills_tree.tag_configure("odd", background="#ffffff")
+        self.daily_bills_tree.bind("<<TreeviewSelect>>", self.on_select_daily_bill)
+
+        # Right side - Bill items
+        items_frame = ttk.LabelFrame(content_frame, text="🧾 Bill Items - Complete Details")
+        items_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(5, 0))
+        
+        self.daily_bill_items_tree = ttk.Treeview(
+            items_frame,
+            columns=("product_id", "name", "qty", "price", "subtotal", "current_stock"),
+            show="headings",
+            height=12,
+        )
+        for col, text in [("product_id", "PID"), ("name", "Product Name"), ("qty", "Qty"), ("price", "Price ₹"), ("subtotal", "Subtotal ₹"), ("current_stock", "Current Stock")]:
+            self.daily_bill_items_tree.heading(col, text=text)
+            self.daily_bill_items_tree.column(col, width=100)
+        self.daily_bill_items_tree.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        self.daily_bill_items_tree.tag_configure("even", background="#f5f7fb")
+        self.daily_bill_items_tree.tag_configure("odd", background="#ffffff")
+
+        self.refresh_daily_sales()
+
+    def build_all_bills_tab(self):
+        # Header with controls
+        header_frame = ttk.Frame(self.all_bills_tab)
+        header_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        ttk.Button(header_frame, text="🔄 Refresh All", command=self.refresh_reports).pack(side=tk.LEFT, padx=5)
+        ttk.Button(header_frame, text="📤 Export CSV", command=self.export_bills_csv).pack(side=tk.LEFT, padx=5)
+        
+        # Summary stats
+        stats_frame = ttk.Frame(header_frame)
+        stats_frame.pack(side=tk.RIGHT)
+        
+        self.var_total_bills = tk.StringVar(value="Total Bills: 0")
+        self.var_total_revenue = tk.StringVar(value="Revenue: ₹0.00")
+        ttk.Label(stats_frame, textvariable=self.var_total_bills, font=("Segoe UI", 10, "bold")).pack(side=tk.LEFT, padx=5)
+        ttk.Label(stats_frame, textvariable=self.var_total_revenue, font=("Segoe UI", 10, "bold")).pack(side=tk.LEFT, padx=5)
+
+        # Main content frame
+        content_frame = ttk.Frame(self.all_bills_tab)
+        content_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        # Bills and items section
+        bills_items_frame = ttk.Frame(content_frame)
+        bills_items_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Left side - Bills list
+        bills_frame = ttk.LabelFrame(bills_items_frame, text="📋 All Bills - Complete Details")
+        bills_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
+        
+        self.bills_tree = ttk.Treeview(
+            bills_frame,
+            columns=("id", "created", "total", "items", "qty"),
+            show="headings",
+            height=15,
+        )
+        for col, text in [("id", "Bill #"), ("created", "Date & Time"), ("total", "Total ₹"), ("items", "Items"), ("qty", "Qty")]:
             self.bills_tree.heading(col, text=text)
-            self.bills_tree.column(col, width=180)
+            self.bills_tree.column(col, width=120)
         self.bills_tree.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         self.bills_tree.tag_configure("even", background="#f5f7fb")
         self.bills_tree.tag_configure("odd", background="#ffffff")
         self.bills_tree.bind("<<TreeviewSelect>>", self.on_select_bill)
 
-        ttk.Label(self.reports_tab, text="🧾 Bill Items:").pack(anchor=tk.W, padx=10)
+        # Right side - Bill items details
+        items_frame = ttk.LabelFrame(bills_items_frame, text="🧾 Bill Items - Complete Details")
+        items_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(5, 0))
+        
         self.bill_items_tree = ttk.Treeview(
-            self.reports_tab,
-            columns=("name", "qty", "price", "subtotal"),
+            items_frame,
+            columns=("product_id", "name", "qty", "price", "subtotal", "current_stock"),
             show="headings",
-            height=10,
+            height=15,
         )
-        for col, text in [("name", "Name"), ("qty", "Qty"), ("price", "Price"), ("subtotal", "Subtotal")]:
+        for col, text in [("product_id", "PID"), ("name", "Product Name"), ("qty", "Qty"), ("price", "Price ₹"), ("subtotal", "Subtotal ₹"), ("current_stock", "Current Stock")]:
             self.bill_items_tree.heading(col, text=text)
-            self.bill_items_tree.column(col, width=160)
+            self.bill_items_tree.column(col, width=100)
         self.bill_items_tree.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         self.bill_items_tree.tag_configure("even", background="#f5f7fb")
         self.bill_items_tree.tag_configure("odd", background="#ffffff")
 
+
         self.refresh_reports()
 
+
     def refresh_reports(self):
+        # Clear existing data
         for i in self.bills_tree.get_children():
             self.bills_tree.delete(i)
-        for idx, r in enumerate(get_recent_bills()):
-            tag = "even" if idx % 2 == 0 else "odd"
-            self.bills_tree.insert("", tk.END, values=(r["id"], r["created_at"], f"{r['total']:.2f}"), tags=(tag,))
         for i in self.bill_items_tree.get_children():
             self.bill_items_tree.delete(i)
+        
+        # Get all bills with comprehensive details
+        bills = get_all_bills()
+        total_revenue = 0
+        
+        print(f"Found {len(bills)} bills in database")  # Debug print
+        
+        if not bills:
+            # Show a message if no bills found
+            self.bills_tree.insert("", tk.END, values=(
+                "No bills", "No bills found in database", "", "", ""
+            ))
+        
+        for idx, bill in enumerate(bills):
+            tag = "even" if idx % 2 == 0 else "odd"
+            # Format date and time properly
+            date_time = bill["created_at"]
+            if " " in date_time:
+                date_part, time_part = date_time.split(" ", 1)
+                # Format date as DD-MM-YYYY and time as HH:MM
+                try:
+                    dt = datetime.strptime(date_time, "%Y-%m-%d %H:%M:%S")
+                    formatted_time = dt.strftime("%d-%m-%Y %H:%M")
+                except:
+                    formatted_time = f"{date_part} {time_part}"
+            else:
+                formatted_time = date_time
+                
+            self.bills_tree.insert("", tk.END, values=(
+                bill["id"], 
+                formatted_time, 
+                f"₹{bill['total']:.2f}",
+                bill["item_count"],
+                bill["total_qty"]
+            ), tags=(tag,))
+            total_revenue += bill["total"]
+        
+        # Update summary stats
+        self.var_total_bills.set(f"Total Bills: {len(bills)}")
+        self.var_total_revenue.set(f"Revenue: ₹{total_revenue:.2f}")
+
+    def refresh_daily_sales(self):
+        date_str = self.var_sales_date.get().strip()
+        if not date_str:
+            return
+        try:
+            # Validate date format
+            datetime.strptime(date_str, "%Y-%m-%d")
+        except ValueError:
+            messagebox.showerror("Invalid Date", "Please use YYYY-MM-DD format")
+            return
+        
+        bills = get_daily_sales(date_str)
+        total_sales = sum(bill["total"] for bill in bills)
+        avg_bill = total_sales / len(bills) if bills else 0
+        
+        # Get comprehensive bill data
+        comprehensive_bills = []
+        total_items = 0
+        for bill in bills:
+            # Get item count and total quantity for each bill
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT COUNT(*) as item_count, SUM(qty) as total_qty 
+                FROM bill_items WHERE bill_id = ?
+            """, (bill["id"],))
+            result = cur.fetchone()
+            conn.close()
+            
+            comprehensive_bills.append({
+                **bill,
+                "item_count": result["item_count"] or 0,
+                "total_qty": result["total_qty"] or 0
+            })
+            total_items += result["total_qty"] or 0
+        
+        # Update summary stats
+        self.var_daily_count.set(str(len(bills)))
+        self.var_daily_total.set(f"₹{total_sales:.2f}")
+        self.var_daily_avg.set(f"₹{avg_bill:.2f}")
+        self.var_daily_items.set(str(total_items))
+        
+        # Clear and populate daily bills with comprehensive details
+        for i in self.daily_bills_tree.get_children():
+            self.daily_bills_tree.delete(i)
+        for idx, bill in enumerate(comprehensive_bills):
+            # Format time properly
+            date_time = bill["created_at"]
+            if " " in date_time:
+                try:
+                    dt = datetime.strptime(date_time, "%Y-%m-%d %H:%M:%S")
+                    time_str = dt.strftime("%H:%M")
+                except:
+                    time_str = date_time.split(" ")[1] if " " in date_time else date_time
+            else:
+                time_str = date_time
+            tag = "even" if idx % 2 == 0 else "odd"
+            self.daily_bills_tree.insert("", tk.END, values=(
+                bill["id"], 
+                time_str, 
+                f"₹{bill['total']:.2f}",
+                bill["item_count"],
+                bill["total_qty"]
+            ), tags=(tag,))
+        
+        # Clear bill items
+        for i in self.daily_bill_items_tree.get_children():
+            self.daily_bill_items_tree.delete(i)
+
+    def on_select_daily_bill(self, event=None):
+        sel = self.daily_bills_tree.selection()
+        if not sel:
+            return
+        
+        try:
+            bill_id = int(self.daily_bills_tree.item(sel[0])["values"][0])
+            
+            # Get comprehensive bill items
+            rows = get_comprehensive_bill_items(bill_id)
+            
+            # Clear existing items
+            for i in self.daily_bill_items_tree.get_children():
+                self.daily_bill_items_tree.delete(i)
+            
+            # Add comprehensive details
+            if rows:
+                for idx, r in enumerate(rows):
+                    tag = "even" if idx % 2 == 0 else "odd"
+                    self.daily_bill_items_tree.insert("", tk.END, values=(
+                        r["product_id"],
+                        r["name"], 
+                        r["qty"], 
+                        f"₹{r['price']:.2f}", 
+                        f"₹{r['subtotal']:.2f}",
+                        r["current_stock"]
+                    ), tags=(tag,))
+            else:
+                # Show a message if no items found
+                self.daily_bill_items_tree.insert("", tk.END, values=(
+                    "No items", "No items found for this bill", "", "", "", ""
+                ))
+                
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load bill items: {e}")
+            # Also clear the items tree on error
+            for i in self.daily_bill_items_tree.get_children():
+                self.daily_bill_items_tree.delete(i)
 
     def on_select_bill(self, event=None):
         sel = self.bills_tree.selection()
         if not sel:
             return
         bill_id = int(self.bills_tree.item(sel[0])["values"][0])
+        
+        # Get comprehensive bill items
+        rows = get_comprehensive_bill_items(bill_id)
+        
+        # Clear existing items
         for i in self.bill_items_tree.get_children():
             self.bill_items_tree.delete(i)
-        for idx, r in enumerate(get_bill_items(bill_id)):
+        
+        # Add comprehensive details
+        for idx, r in enumerate(rows):
             tag = "even" if idx % 2 == 0 else "odd"
-            self.bill_items_tree.insert("", tk.END, values=(r["name"], r["qty"], f"{r['price']:.2f}", f"{r['subtotal']:.2f}"), tags=(tag,))
+            self.bill_items_tree.insert("", tk.END, values=(
+                r["product_id"],
+                r["name"], 
+                r["qty"], 
+                f"₹{r['price']:.2f}", 
+                f"₹{r['subtotal']:.2f}",
+                r["current_stock"]
+            ), tags=(tag,))
+
+    def show_analytics(self):
+        """Show comprehensive sales analytics"""
+        try:
+            summary, top_products, daily_trend = get_sales_analytics()
+            
+            # Create analytics window
+            analytics_window = tk.Toplevel(self.master)
+            analytics_window.title("📊 Sales Analytics - Complete Details")
+            analytics_window.geometry("800x600")
+            analytics_window.transient(self.master)
+            analytics_window.grab_set()
+            
+            # Main frame
+            main_frame = ttk.Frame(analytics_window)
+            main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+            
+            # Summary section
+            summary_frame = ttk.LabelFrame(main_frame, text="📈 Overall Summary")
+            summary_frame.pack(fill=tk.X, padx=5, pady=5)
+            
+            summary_text = f"""
+Total Bills: {summary['total_bills']:,}
+Total Revenue: ₹{summary['total_revenue']:.2f}
+Average Bill Value: ₹{summary['avg_bill_value']:.2f}
+First Sale: {summary['first_sale']}
+Last Sale: {summary['last_sale']}
+            """
+            ttk.Label(summary_frame, text=summary_text, font=("Segoe UI", 10)).pack(padx=10, pady=5)
+            
+            # Top products section
+            products_frame = ttk.LabelFrame(main_frame, text="🏆 Top Selling Products")
+            products_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+            
+            products_tree = ttk.Treeview(products_frame, columns=("name", "sold", "revenue"), show="headings", height=8)
+            products_tree.heading("name", text="Product Name")
+            products_tree.heading("sold", text="Total Sold")
+            products_tree.heading("revenue", text="Revenue ₹")
+            products_tree.column("name", width=300)
+            products_tree.column("sold", width=100)
+            products_tree.column("revenue", width=150)
+            products_tree.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+            
+            for idx, product in enumerate(top_products):
+                tag = "even" if idx % 2 == 0 else "odd"
+                products_tree.insert("", tk.END, values=(
+                    product["name"],
+                    f"{product['total_sold']:,}",
+                    f"₹{product['total_revenue']:.2f}"
+                ), tags=(tag,))
+            
+            products_tree.tag_configure("even", background="#f5f7fb")
+            products_tree.tag_configure("odd", background="#ffffff")
+            
+            # Close button
+            ttk.Button(main_frame, text="Close", command=analytics_window.destroy).pack(pady=10)
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load analytics: {str(e)}")
+
+    def export_bills_csv(self):
+        """Export all bills to CSV file"""
+        try:
+            bills = get_all_bills()
+            if not bills:
+                messagebox.showwarning("No Data", "No bills found to export")
+                return
+            
+            filename = filedialog.asksaveasfilename(
+                defaultextension=".csv",
+                filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+                title="Export Bills to CSV"
+            )
+            
+            if filename:
+                with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+                    writer = csv.writer(csvfile)
+                    writer.writerow(['Bill ID', 'Date & Time', 'Total ₹', 'Item Count', 'Total Quantity'])
+                    
+                    for bill in bills:
+                        writer.writerow([
+                            bill['id'],
+                            bill['created_at'],
+                            f"{bill['total']:.2f}",
+                            bill['item_count'],
+                            bill['total_qty']
+                        ])
+                
+                messagebox.showinfo("Success", f"Exported {len(bills)} bills to {filename}")
+                
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to export: {str(e)}")
+
+    def export_daily_csv(self):
+        """Export daily sales to CSV file"""
+        try:
+            date_str = self.var_sales_date.get().strip()
+            if not date_str:
+                messagebox.showwarning("No Date", "Please select a date first")
+                return
+                
+            bills = get_daily_sales(date_str)
+            if not bills:
+                messagebox.showwarning("No Data", f"No sales found for {date_str}")
+                return
+            
+            filename = filedialog.asksaveasfilename(
+                defaultextension=".csv",
+                filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+                title=f"Export Daily Sales for {date_str}"
+            )
+            
+            if filename:
+                with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+                    writer = csv.writer(csvfile)
+                    writer.writerow(['Date', 'Bill ID', 'Time', 'Total ₹', 'Item Count', 'Total Quantity'])
+                    
+                    for bill in bills:
+                        time_str = bill["created_at"].split(" ")[1] if " " in bill["created_at"] else bill["created_at"]
+                        # Get item count and total quantity
+                        conn = get_conn()
+                        cur = conn.cursor()
+                        cur.execute("""
+                            SELECT COUNT(*) as item_count, SUM(qty) as total_qty 
+                            FROM bill_items WHERE bill_id = ?
+                        """, (bill["id"],))
+                        result = cur.fetchone()
+                        conn.close()
+                        
+                        writer.writerow([
+                            date_str,
+                            bill['id'],
+                            time_str,
+                            f"{bill['total']:.2f}",
+                            result["item_count"] or 0,
+                            result["total_qty"] or 0
+                        ])
+                
+                messagebox.showinfo("Success", f"Exported {len(bills)} bills for {date_str} to {filename}")
+                
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to export daily sales: {str(e)}")
 
     # Backup / Restore handlers
     def on_backup(self):
@@ -983,14 +2957,151 @@ class App(ttk.Frame):
         try:
             count = restore_products_csv(path)
             self.refresh_products()
-            self.refresh_product_choices()
+            self.refresh_billing_products()
             messagebox.showinfo("Restore", f"Added {count} products from file")
         except Exception as e:
             messagebox.showerror("Error", str(e))
 
 
+def fix_data_mismatch():
+    """Fix data mismatch between bill_items and products by creating missing products"""
+    conn = get_conn()
+    cur = conn.cursor()
+    
+    try:
+        # Get all product IDs that exist in products table
+        cur.execute("SELECT id FROM products ORDER BY id")
+        existing_product_ids = [row[0] for row in cur.fetchall()]
+        print(f"Existing product IDs: {existing_product_ids}")
+        
+        if not existing_product_ids:
+            print("No products found, cannot fix data mismatch")
+            return
+        
+        # Get all unique product_ids referenced in bill_items
+        cur.execute("SELECT DISTINCT product_id FROM bill_items ORDER BY product_id")
+        referenced_product_ids = [row[0] for row in cur.fetchall()]
+        print(f"Referenced product IDs in bill_items: {referenced_product_ids}")
+        
+        # Find missing product IDs
+        missing_product_ids = [pid for pid in referenced_product_ids if pid not in existing_product_ids]
+        print(f"Missing product IDs: {missing_product_ids}")
+        
+        if missing_product_ids:
+            # Create missing products with generic information
+            for missing_id in missing_product_ids:
+                # Get sample data from an existing bill_item to preserve the original price
+                cur.execute("""
+                    SELECT price, qty, subtotal 
+                    FROM bill_items 
+                    WHERE product_id = ? 
+                    LIMIT 1
+                """, (missing_id,))
+                sample_data = cur.fetchone()
+                
+                if sample_data:
+                    price = sample_data[0]
+                    # Create a generic product name based on the ID
+                    product_name = f"Product {missing_id}"
+                    
+                    cur.execute("""
+                        INSERT INTO products (id, name, price, stock, image_path) 
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (missing_id, product_name, price, 100, "images/default.png"))
+                    
+                    print(f"Created missing product: ID={missing_id}, Name={product_name}, Price={price}")
+            
+            conn.commit()
+            print("Data mismatch fixed successfully by creating missing products!")
+        else:
+            print("No data mismatch found")
+            
+    except Exception as e:
+        print(f"Error fixing data mismatch: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
+
+def create_sample_data():
+    """Create sample data for testing"""
+    conn = get_conn()
+    cur = conn.cursor()
+    
+    try:
+        # Check if data already exists
+        cur.execute("SELECT COUNT(*) FROM products")
+        product_count = cur.fetchone()[0]
+        
+        cur.execute("SELECT COUNT(*) FROM bills")
+        bill_count = cur.fetchone()[0]
+        
+        print(f"Found {product_count} products and {bill_count} bills in database")
+        
+        if product_count == 0:
+            # Add sample products
+            sample_products = [
+                ("Pizza Margherita", 250.0, 50, "images/pizza.png"),
+                ("Burger Deluxe", 180.0, 30, "images/burger.png"),
+                ("Pasta Carbonara", 220.0, 25, "images/pasta.png"),
+                ("Chicken Wings", 150.0, 40, "images/wings.png"),
+                ("Caesar Salad", 120.0, 20, "images/salad.png"),
+                ("Coca Cola", 30.0, 100, "images/coke.png")
+            ]
+            
+            for name, price, stock, image in sample_products:
+                cur.execute("INSERT INTO products (name, price, stock, image_path) VALUES (?, ?, ?, ?)",
+                           (name, price, stock, image))
+            
+            print("Sample products created successfully!")
+        
+        if bill_count == 0:
+            # Create sample bills for today and yesterday
+            today = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+            
+            # Bill 1 - Today
+            cur.execute("INSERT INTO bills (created_at, total) VALUES (?, ?)", (today, 450.0))
+            bill_id_1 = cur.lastrowid
+            
+            # Bill 2 - Yesterday
+            cur.execute("INSERT INTO bills (created_at, total) VALUES (?, ?)", (yesterday, 320.0))
+            bill_id_2 = cur.lastrowid
+            
+            # Add sample bill items for bill 1
+            sample_items_1 = [
+                (bill_id_1, 1, 2, 250.0, 500.0),  # 2x Pizza
+                (bill_id_1, 2, 1, 180.0, 180.0),  # 1x Burger
+                (bill_id_1, 6, 2, 30.0, 60.0)     # 2x Coke
+            ]
+            
+            # Add sample bill items for bill 2
+            sample_items_2 = [
+                (bill_id_2, 3, 1, 220.0, 220.0),  # 1x Pasta
+                (bill_id_2, 4, 2, 150.0, 300.0),  # 2x Wings
+                (bill_id_2, 5, 1, 120.0, 120.0)   # 1x Salad
+            ]
+            
+            for bill_id, product_id, qty, price, subtotal in sample_items_1 + sample_items_2:
+                cur.execute("INSERT INTO bill_items (bill_id, product_id, qty, price, subtotal) VALUES (?, ?, ?, ?, ?)",
+                           (bill_id, product_id, qty, price, subtotal))
+            
+            conn.commit()
+            print("Sample bills created successfully!")
+        else:
+            print("Bills already exist, skipping creation")
+            
+        # Always try to fix data mismatch
+        fix_data_mismatch()
+            
+    except Exception as e:
+        print(f"Error creating sample data: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
+
 def main():
     init_db()
+    create_sample_data()  # Create sample data for testing
     root = tk.Tk()
     style = ttk.Style()
     try:
