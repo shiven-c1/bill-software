@@ -1,0 +1,8 @@
+==== INVOICE ====
+Bill ID: 2
+Date: 2025-09-15 15:32:32
+
+Items:
+- pizza x 4 @ 200.00 = 800.00
+
+Total: 800.00

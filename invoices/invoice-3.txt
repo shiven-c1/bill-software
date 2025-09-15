@@ -1,0 +1,8 @@
+==== INVOICE ====
+Bill ID: 3
+Date: 2025-09-15 15:32:54
+
+Items:
+- lassi x 1 @ 30.00 = 30.00
+
+Total: 30.00
