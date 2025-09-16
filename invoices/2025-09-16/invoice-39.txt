@@ -1,0 +1,12 @@
+DSS
+deendayal nagar 
+Phone: 7020685839
+
+==== INVOICE ====
+Bill ID: 39
+Date: 2025-09-16 16:42:30
+
+Items:
+- shiven x 1 @ 999.00 = 999.00
+
+Total: 999.00

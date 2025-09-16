@@ -201,9 +201,21 @@ def update_product(pid: int, name: str, price: float, stock: int, image_path: st
 def delete_product(pid: int):
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("DELETE FROM products WHERE id=?", (int(pid),))
-    conn.commit()
-    conn.close()
+    try:
+        # First delete all bill_items that reference this product
+        cur.execute("DELETE FROM bill_items WHERE product_id=?", (int(pid),))
+        deleted_items = cur.rowcount
+        print(f"Deleted {deleted_items} bill_items for product {pid}")
+        
+        # Then delete the product itself
+        cur.execute("DELETE FROM products WHERE id=?", (int(pid),))
+        conn.commit()
+        print(f"Product {pid} deleted successfully")
+    except Exception as e:
+        print(f"Error deleting product {pid}: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
 
 
 # Billing operations
@@ -533,7 +545,7 @@ class App(ttk.Frame):
         style.configure("Success.TButton", foreground="white", background="#4CAF50")
         style.configure("Danger.TButton", foreground="white", background="#f44336")
         style.configure("Info.TButton", foreground="white", background="#2196F3")
-        style.configure("Product.TFrame", relief="raised", borderwidth=1)
+        style.configure("Product.TFrame", relief="raised", borderwidth=2)
 
     def build_header(self):
         header = tk.Frame(self, bg="#2b74ff", height=80)
@@ -560,13 +572,9 @@ class App(ttk.Frame):
         # Help button
         help_btn = tk.Button(right_frame, text="❓ Help", command=self.show_help,
                            font=("Segoe UI", 10, "bold"), fg="white", bg="#1976D2",
-                           relief=tk.FLAT, padx=15, pady=5, cursor="hand2")
+                           relief="raised", bd=2, padx=15, pady=5, cursor="hand2")
         help_btn.pack(anchor=tk.E, pady=(0, 5))
         ToolTip(help_btn, "Click to open the user guide and help documentation")
-        
-        self.status_label = tk.Label(right_frame, text="🟢 System Ready", 
-                                   font=("Segoe UI", 11, "bold"), fg="#4CAF50", bg="#2b74ff")
-        self.status_label.pack(anchor=tk.E)
         
         version_label = tk.Label(right_frame, text="Version 2.0 Professional", 
                                font=("Segoe UI", 9), fg="#e3f2fd", bg="#2b74ff")
@@ -617,7 +625,7 @@ class App(ttk.Frame):
             icon = icons.get(status_type, "ℹ️")
             self.status_var.set(f"{icon} {text}")
 
-    def show_help(self):
+    def show_help(self, tab_index=0):
         """Show help dialog with user guide"""
         help_window = tk.Toplevel(self)
         help_window.title("📚 Help & User Guide")
@@ -745,6 +753,47 @@ TIPS:
         features_text.insert(tk.END, features_content)
         features_text.config(state=tk.DISABLED)
         
+        # Contact tab
+        contact = ttk.Frame(help_notebook)
+        help_notebook.add(contact, text="📞 Contact")
+        
+        contact_text = tk.Text(contact, wrap=tk.WORD, font=("Segoe UI", 10), 
+                             padx=10, pady=10, bg="#f8f9fa")
+        contact_text.pack(fill=tk.BOTH, expand=True)
+        
+        contact_content = """
+📞 CONTACT INFORMATION
+
+For technical support or questions about the software, please contact us:
+
+📱 Customer Care Number 1: 7020685839
+
+📱 Customer Care Number 2: 9022966119
+
+🕒 Support Hours:
+• Monday - Friday: 9:00 AM - 6:00 PM
+• Saturday: 10:00 AM - 4:00 PM
+• Sunday: Closed
+
+💬 What we can help with:
+• Software installation and setup
+• Feature explanations and tutorials
+• Technical issues and troubleshooting
+• Custom modifications and enhancements
+• Data backup and recovery assistance
+
+📧 Email Support:
+For detailed queries, you can also reach us via email with your contact number.
+
+Thank you for using our Professional Billing Software!
+        """
+        
+        contact_text.insert(tk.END, contact_content)
+        contact_text.config(state=tk.DISABLED)
+        
+        # Select the specified tab
+        help_window.after(100, lambda: help_notebook.select(tab_index))
+        
         # Close button
         close_btn = ttk.Button(main_frame, text="✅ Close Help", command=help_window.destroy)
         close_btn.pack(pady=(10, 0))
@@ -761,10 +810,9 @@ TIPS:
         menubar.add_cascade(label="File", menu=file_menu)
 
         help_menu = tk.Menu(menubar, tearoff=0)
-        help_menu.add_command(label="About", command=lambda: messagebox.showinfo(
-            "About",
-            "Simple Billing & Inventory\nData stored locally (SQLite).\nMade easy for everyone.",
-        ))
+        help_menu.add_command(label="Getting Started", command=lambda: self.show_help(0))
+        help_menu.add_command(label="Features", command=lambda: self.show_help(1))
+        help_menu.add_command(label="Contact Us", command=lambda: self.show_help(2))
         menubar.add_cascade(label="Help", menu=help_menu)
 
         settings_menu = tk.Menu(menubar, tearoff=0)
@@ -861,34 +909,30 @@ TIPS:
                                            font=("Segoe UI", 9), foreground="gray")
         self.image_preview_label.pack(pady=(8, 0))
 
-        # Action buttons
+        # Action buttons - all in one row
         buttons_frame = ttk.Frame(form_frame)
         buttons_frame.pack(fill=tk.X, padx=20, pady=20)
         
-        # Button row 1
-        btn_row1 = ttk.Frame(buttons_frame)
-        btn_row1.pack(fill=tk.X, pady=(0, 8))
+        # Single button row
+        btn_row = ttk.Frame(buttons_frame)
+        btn_row.pack(fill=tk.X)
         
-        add_btn = ttk.Button(btn_row1, text="➕ Add New Product", command=self.on_add_product, 
+        add_btn = ttk.Button(btn_row, text="➕ Add New Product", command=self.on_add_product, 
                   style="Success.TButton")
         add_btn.pack(side=tk.LEFT, padx=(0, 10))
         ToolTip(add_btn, "Add a new product to your inventory")
         
-        update_btn = ttk.Button(btn_row1, text="✏️ Update Product", command=self.on_update_product, 
+        update_btn = ttk.Button(btn_row, text="✏️ Update Product", command=self.on_update_product, 
                   style="Info.TButton")
-        update_btn.pack(side=tk.LEFT)
+        update_btn.pack(side=tk.LEFT, padx=(0, 10))
         ToolTip(update_btn, "Update the selected product's information")
         
-        # Button row 2
-        btn_row2 = ttk.Frame(buttons_frame)
-        btn_row2.pack(fill=tk.X, pady=(0, 0))
-        
-        delete_btn = ttk.Button(btn_row2, text="🗑️ Delete Product", command=self.on_delete_product, 
+        delete_btn = ttk.Button(btn_row, text="🗑️ Delete Product", command=self.on_delete_product, 
                   style="Danger.TButton")
         delete_btn.pack(side=tk.LEFT, padx=(0, 10))
         ToolTip(delete_btn, "Delete the selected product (cannot be undone)")
         
-        clear_btn = ttk.Button(btn_row2, text="🧹 Clear Form", command=self.clear_product_form)
+        clear_btn = ttk.Button(btn_row, text="🧹 Clear Form", command=self.clear_product_form)
         clear_btn.pack(side=tk.LEFT)
         ToolTip(clear_btn, "Clear all form fields to start fresh")
 
@@ -1285,22 +1329,24 @@ TIPS:
                      font=("Segoe UI", 10), foreground="orange").pack(pady=20)
             return
         
-        thumb_size = (80, 80)
+        thumb_size = (50, 50)
         self._billing_gallery_images = []
         
-        # Create product grid (3 columns)
+        # Create product grid (5 columns for better layout)
         for idx, p in enumerate(products):
-            row = idx // 3
-            col = idx % 3
+            row = idx // 5
+            col = idx % 5
             
-            # Product frame
-            product_frame = ttk.Frame(self.billing_gallery_inner, relief="raised", borderwidth=1)
-            product_frame.grid(row=row, column=col, padx=8, pady=8, sticky="nsew")
-            product_frame.configure(style="Product.TFrame")
+            # Product frame - uniform size (optimized for 5 columns)
+            product_frame = tk.Frame(self.billing_gallery_inner, relief="raised", borderwidth=2, width=120, height=130, bg="white")
+            product_frame.grid(row=row, column=col, padx=4, pady=4, sticky="nsew")
+            product_frame.grid_propagate(False)  # Prevent frame from shrinking
+            product_frame.pack_propagate(False)  # Prevent frame from shrinking due to content
             
-            # Image frame
-            img_frame = ttk.Frame(product_frame)
-            img_frame.pack(pady=5)
+            # Image frame - centered with fixed size
+            img_frame = tk.Frame(product_frame, width=100, height=50, bg="white")
+            img_frame.pack(pady=6)
+            img_frame.pack_propagate(False)
             
             # Product image
             img_label = ttk.Label(img_frame, cursor="hand2")
@@ -1318,23 +1364,28 @@ TIPS:
                 img_label.image = img
                 self._billing_gallery_images.append(img)
             else:
-                img_label.configure(text="📦", font=("Segoe UI", 24), width=8, height=3)
+                img_label.configure(text="📦", font=("Segoe UI", 20), width=8)
             
-            img_label.pack()
+            img_label.pack(expand=True)
+            
+            # Text frame with fixed size
+            text_frame = tk.Frame(product_frame, width=110, height=60)
+            text_frame.pack(pady=(0, 6))
+            text_frame.pack_propagate(False)
             
             # Product name
-            name_label = ttk.Label(product_frame, text=p["name"], font=("Segoe UI", 9, "bold"), 
+            name_label = ttk.Label(text_frame, text=p["name"], font=("Segoe UI", 8, "bold"), 
                                  wraplength=100, justify="center")
-            name_label.pack(pady=2)
+            name_label.pack(pady=(1, 1))
             
             # Price
-            price_label = ttk.Label(product_frame, text=f"₹{p['price']:.2f}", 
-                                  font=("Segoe UI", 10, "bold"), foreground="#2b74ff")
+            price_label = ttk.Label(text_frame, text=f"₹{p['price']:.2f}", 
+                                  font=("Segoe UI", 9, "bold"), foreground="#2b74ff")
             price_label.pack(pady=1)
             
             # Stock
-            stock_label = ttk.Label(product_frame, text=f"Stock: {p['stock']}", 
-                                  font=("Segoe UI", 8), foreground="gray")
+            stock_label = ttk.Label(text_frame, text=f"Stock: {p['stock']}", 
+                                  font=("Segoe UI", 9, "bold"), foreground="#E65100")
             stock_label.pack(pady=1)
             
             # Click to add functionality
@@ -1346,11 +1397,11 @@ TIPS:
             # Bind click events to all widgets in the product frame
             for widget in [product_frame, img_label, name_label, price_label, stock_label]:
                 widget.bind("<Button-1>", make_click_handler(p["id"]))
-                widget.bind("<Enter>", lambda e, w=product_frame: w.configure(relief="solid", borderwidth=2))
-                widget.bind("<Leave>", lambda e, w=product_frame: w.configure(relief="raised", borderwidth=1))
+            
+            # No hover effects - just uniform sizing
         
-        # Configure grid weights
-        for i in range(3):
+        # Configure grid weights for 5 columns
+        for i in range(5):
             self.billing_gallery_inner.columnconfigure(i, weight=1)
 
     def add_product_to_cart(self, pid: int):
@@ -1364,23 +1415,312 @@ TIPS:
             messagebox.showwarning("Stock", f"Out of stock: {prod['name']}")
             return
         
-        # Check if already in cart
-        for item in self.cart_items:
-            if item["product_id"] == pid:
-                if item["qty"] + 1 > prod["stock"]:
-                    messagebox.showwarning("Stock", f"Only {prod['stock']} in stock")
-                    return
-                item["qty"] += 1
-                break
-        else:
-            self.cart_items.append({
-                "product_id": pid,
-                "name": prod["name"],
-                "price": float(prod["price"]),
-                "qty": 1,
-            })
+        # Show popup dialog for quantity selection
+        self.show_product_popup(prod)
+    
+    def show_product_popup(self, product):
+        """Show popup dialog for product quantity selection"""
+        # Create popup window
+        popup = tk.Toplevel(self.master)
+        popup.title(f"Add {product['name']} to Cart")
+        popup.geometry("450x600")
+        popup.resizable(False, False)
+        popup.transient(self.master)
+        popup.grab_set()
         
-        self.refresh_cart()
+        # Center the popup properly
+        popup.update_idletasks()
+        
+        # Get screen dimensions
+        screen_width = popup.winfo_screenwidth()
+        screen_height = popup.winfo_screenheight()
+        
+        # Calculate position to center the window
+        x = (screen_width - 450) // 2
+        y = (screen_height - 600) // 2
+        
+        # Ensure positive coordinates and proper centering
+        x = max(0, x)
+        y = max(0, y)
+        
+        # Set the geometry with calculated position
+        popup.geometry(f"450x600+{x}+{y}")
+        
+        # Force the popup to be visible and centered
+        popup.lift()
+        popup.focus_force()
+        popup.attributes('-topmost', True)
+        popup.after_idle(lambda: popup.attributes('-topmost', False))
+        
+        # Configure popup style
+        popup.configure(bg="#F5F5F5")
+        
+        # Main frame with professional styling
+        main_frame = tk.Frame(popup, bg="#FFFFFF", relief="solid", bd=1)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=15)
+        
+        # Product info frame - centered
+        info_frame = tk.Frame(main_frame, bg="#FFFFFF")
+        info_frame.pack(fill=tk.X, padx=20, pady=15)
+        
+        # Product image - centered
+        try:
+            if product.get("image_path") and os.path.exists(product["image_path"]):
+                img = Image.open(product["image_path"])
+                img = img.resize((80, 80), Image.Resampling.LANCZOS)
+                photo = ImageTk.PhotoImage(img)
+                img_label = tk.Label(info_frame, image=photo, bg="#FFFFFF")
+                img_label.image = photo  # Keep a reference
+            else:
+                img_label = tk.Label(info_frame, text="📦", font=("Segoe UI", 24), bg="#FFFFFF")
+        except:
+            img_label = tk.Label(info_frame, text="📦", font=("Segoe UI", 24), bg="#FFFFFF")
+        
+        img_label.pack(pady=10)
+        
+        # Product details - centered
+        details_frame = tk.Frame(info_frame, bg="#FFFFFF")
+        details_frame.pack(fill=tk.X, pady=5)
+        
+        name_label = tk.Label(details_frame, text=product["name"], 
+                             font=("Segoe UI", 16, "bold"), bg="#FFFFFF", fg="#333333")
+        name_label.pack(pady=2)
+        
+        price_label = tk.Label(details_frame, text=f"₹{product['price']:.2f}", 
+                              font=("Segoe UI", 14, "bold"), bg="#FFFFFF", fg="#2E7D32")
+        price_label.pack(pady=2)
+        
+        stock_label = tk.Label(details_frame, text=f"Stock: {product['stock']} units", 
+                              font=("Segoe UI", 11), bg="#FFFFFF", fg="#888888")
+        stock_label.pack(pady=2)
+        
+        # Quantity selection frame - centered
+        qty_frame = tk.Frame(main_frame, bg="#FFFFFF")
+        qty_frame.pack(fill=tk.X, padx=20, pady=15)
+        
+        qty_label = tk.Label(qty_frame, text="Quantity:", 
+                             font=("Segoe UI", 14, "bold"), bg="#FFFFFF")
+        qty_label.pack(pady=10)
+        
+        # Quantity controls with professional styling - centered
+        controls_frame = tk.Frame(qty_frame, bg="#FFFFFF")
+        controls_frame.pack(expand=True)
+        
+        # Quantity variable
+        qty_var = tk.StringVar(value="1")
+        
+        # Minus button - professional styling
+        minus_btn = tk.Button(controls_frame, text="−", font=("Segoe UI", 20, "bold"),
+                             width=4, height=1, bg="#FF5722", fg="white",
+                             relief="flat", bd=0, cursor="hand2",
+                             activebackground="#E64A19", activeforeground="white")
+        minus_btn.pack(side=tk.LEFT, padx=(0, 20))
+        
+        # Quantity input - professional styling
+        qty_entry = tk.Entry(controls_frame, textvariable=qty_var, font=("Segoe UI", 18, "bold"),
+                            width=8, justify=tk.CENTER, relief="solid", bd=2,
+                            bg="#F8F9FA", fg="#333333", insertbackground="#333333")
+        qty_entry.pack(side=tk.LEFT, padx=10)
+        
+        # Plus button - professional styling
+        plus_btn = tk.Button(controls_frame, text="+", font=("Segoe UI", 20, "bold"),
+                            width=4, height=1, bg="#4CAF50", fg="white",
+                            relief="flat", bd=0, cursor="hand2",
+                            activebackground="#45A049", activeforeground="white")
+        plus_btn.pack(side=tk.LEFT, padx=(20, 0))
+        
+        # Total price display with professional styling - centered
+        total_frame = tk.Frame(main_frame, bg="#F8F9FA", relief="solid", bd=1)
+        total_frame.pack(fill=tk.X, padx=20, pady=15)
+        
+        total_label = tk.Label(total_frame, text="Total: ₹0.00", 
+                              font=("Segoe UI", 18, "bold"), bg="#F8F9FA", fg="#2E7D32")
+        total_label.pack(pady=15)
+        
+        # Buttons frame with professional styling - centered
+        buttons_frame = tk.Frame(main_frame, bg="#FFFFFF")
+        buttons_frame.pack(fill=tk.X, padx=20, pady=30)
+        
+        # Center the buttons
+        buttons_container = tk.Frame(buttons_frame, bg="#FFFFFF")
+        buttons_container.pack()
+        
+        # Cancel button - professional styling
+        cancel_btn = tk.Button(buttons_container, text="Cancel", font=("Segoe UI", 14, "bold"),
+                              width=15, height=3, bg="#E0E0E0", fg="#666666",
+                              relief="raised", bd=2, cursor="hand2",
+                              activebackground="#BDBDBD", activeforeground="#333333",
+                              command=popup.destroy)
+        cancel_btn.pack(side=tk.LEFT, padx=(0, 20))
+        
+        # Add button - professional styling
+        add_btn = tk.Button(buttons_container, text="Add to Cart", font=("Segoe UI", 14, "bold"),
+                           width=18, height=3, bg="#2196F3", fg="white",
+                           relief="raised", bd=2, cursor="hand2",
+                           activebackground="#1976D2", activeforeground="white")
+        add_btn.pack(side=tk.LEFT)
+        
+        # Functions for quantity controls
+        def update_quantity(delta):
+            try:
+                current_qty = int(qty_var.get())
+                new_qty = max(1, min(current_qty + delta, product["stock"]))
+                qty_var.set(str(new_qty))
+                update_total()
+            except ValueError:
+                qty_var.set("1")
+                update_total()
+        
+        def update_total():
+            try:
+                qty = int(qty_var.get())
+                total = qty * float(product["price"])
+                total_label.config(text=f"Total: ₹{total:.2f}")
+            except ValueError:
+                total_label.config(text="Total: ₹0.00")
+        
+        def add_to_cart():
+            try:
+                qty = int(qty_var.get())
+                if qty <= 0:
+                    messagebox.showwarning("Invalid Quantity", "Please enter a valid quantity")
+                    return
+                
+                if qty > product["stock"]:
+                    messagebox.showwarning("Stock", f"Only {product['stock']} units available")
+                    return
+                
+                # Check if already in cart
+                for item in self.cart_items:
+                    if item["product_id"] == product["id"]:
+                        if item["qty"] + qty > product["stock"]:
+                            messagebox.showwarning("Stock", f"Only {product['stock']} units available")
+                            return
+                        item["qty"] += qty
+                        break
+                else:
+                    self.cart_items.append({
+                        "product_id": product["id"],
+                        "name": product["name"],
+                        "price": float(product["price"]),
+                        "qty": qty,
+                    })
+                
+                self.refresh_cart()
+                
+                # Close popup immediately - no success message to speed up process
+                popup.destroy()
+                
+            except ValueError:
+                messagebox.showwarning("Invalid Quantity", "Please enter a valid number")
+        
+        # Bind events
+        minus_btn.config(command=lambda: update_quantity(-1))
+        plus_btn.config(command=lambda: update_quantity(1))
+        add_btn.config(command=add_to_cart)
+        
+        # Bind quantity entry changes
+        qty_var.trace("w", lambda *args: update_total())
+        
+        # Initial total update
+        update_total()
+        
+        # Focus on quantity entry and ensure popup is visible
+        qty_entry.focus()
+        qty_entry.select_range(0, tk.END)
+        
+        # Ensure popup is on top and visible
+        popup.lift()
+        popup.focus_force()
+        popup.attributes('-topmost', True)
+        popup.after_idle(lambda: popup.attributes('-topmost', False))
+        
+        # Force update and show
+        popup.update()
+        popup.deiconify()
+
+    def show_add_success_popup(self, parent_popup, product, qty):
+        """Show success popup after adding product to cart"""
+        # Close the quantity popup first
+        parent_popup.destroy()
+        
+        # Create success popup
+        success_popup = tk.Toplevel(self.master)
+        success_popup.title("Product Added Successfully")
+        success_popup.geometry("400x250")
+        success_popup.resizable(False, False)
+        success_popup.transient(self.master)
+        success_popup.grab_set()
+        
+        # Center the popup
+        success_popup.update_idletasks()
+        x = (success_popup.winfo_screenwidth() // 2) - (400 // 2)
+        y = (success_popup.winfo_screenheight() // 2) - (250 // 2)
+        success_popup.geometry(f"400x250+{x}+{y}")
+        
+        # Configure popup style
+        success_popup.configure(bg="#F5F5F5")
+        
+        # Main frame
+        main_frame = tk.Frame(success_popup, bg="#FFFFFF", relief="solid", bd=1)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=15)
+        
+        # Success icon and message
+        success_frame = tk.Frame(main_frame, bg="#FFFFFF")
+        success_frame.pack(fill=tk.X, padx=20, pady=20)
+        
+        # Success icon
+        icon_label = tk.Label(success_frame, text="✅", font=("Segoe UI", 32), bg="#FFFFFF")
+        icon_label.pack(pady=10)
+        
+        # Success message
+        success_msg = tk.Label(success_frame, 
+                              text=f"Successfully added {qty} x {product['name']} to cart!",
+                              font=("Segoe UI", 14, "bold"), bg="#FFFFFF", fg="#2E7D32")
+        success_msg.pack(pady=5)
+        
+        # Cart total
+        cart_total = sum(item["price"] * item["qty"] for item in self.cart_items)
+        total_msg = tk.Label(success_frame, 
+                            text=f"Cart Total: ₹{cart_total:.2f}",
+                            font=("Segoe UI", 12), bg="#FFFFFF", fg="#666666")
+        total_msg.pack(pady=5)
+        
+        # Buttons frame
+        buttons_frame = tk.Frame(main_frame, bg="#FFFFFF")
+        buttons_frame.pack(fill=tk.X, padx=20, pady=20)
+        
+        # Continue Billing button
+        continue_btn = tk.Button(buttons_frame, text="Continue Billing", 
+                                font=("Segoe UI", 12, "bold"),
+                                width=15, height=2, bg="#4CAF50", fg="white",
+                                relief="flat", bd=0, cursor="hand2",
+                                activebackground="#45A049", activeforeground="white",
+                                command=success_popup.destroy)
+        continue_btn.pack(side=tk.LEFT, padx=(0, 10))
+        
+        # View Cart button
+        view_cart_btn = tk.Button(buttons_frame, text="View Cart", 
+                                 font=("Segoe UI", 12, "bold"),
+                                 width=12, height=2, bg="#2196F3", fg="white",
+                                 relief="flat", bd=0, cursor="hand2",
+                                 activebackground="#1976D2", activeforeground="white",
+                                 command=lambda: [success_popup.destroy(), self.switch_to_billing_tab()])
+        view_cart_btn.pack(side=tk.RIGHT)
+        
+        # Ensure popup is visible
+        success_popup.lift()
+        success_popup.focus_force()
+        success_popup.attributes('-topmost', True)
+        success_popup.after_idle(lambda: success_popup.attributes('-topmost', False))
+
+    def switch_to_billing_tab(self):
+        """Switch to billing tab to show the cart"""
+        # Find the billing tab and switch to it
+        for i, tab in enumerate(self.notebook.tabs()):
+            if "Billing" in self.notebook.tab(tab, "text"):
+                self.notebook.select(i)
+                break
 
     def recalc_total(self):
         total = sum(i["price"] * i["qty"] for i in self.cart_items)
@@ -1515,10 +1855,8 @@ TIPS:
         stats_frame.pack(side=tk.RIGHT)
         
         self.var_total_tables = tk.StringVar(value="Tables: 8")
-        self.var_active_orders = tk.StringVar(value="Active: 0")
         
         ttk.Label(stats_frame, textvariable=self.var_total_tables, font=("Segoe UI", 10)).pack(side=tk.LEFT, padx=5)
-        ttk.Label(stats_frame, textvariable=self.var_active_orders, font=("Segoe UI", 10)).pack(side=tk.LEFT, padx=5)
 
         # Main container for table view
         self.tables_main_frame = ttk.Frame(self.tables_tab)
@@ -1547,31 +1885,25 @@ TIPS:
         # Create systematic table grid (2 rows x 4 columns for 8 tables)
         self.table_buttons = []
         
-        # Add row labels
-        for row in range(2):
-            row_label = tk.Label(ac_frame, text=f"Row {row + 1}", 
-                                font=("Segoe UI", 12, "bold"), fg="#424242")
-            row_label.grid(row=row*2, column=0, padx=8, pady=8, sticky="w")
+        # Row labels removed for cleaner layout
         
-        # Add column labels
-        for col in range(4):
-            col_label = tk.Label(ac_frame, text=f"Col {col + 1}", 
-                                font=("Segoe UI", 12, "bold"), fg="#424242")
-            col_label.grid(row=0, column=col+1, padx=8, pady=8, sticky="s")
+        # Column labels removed for cleaner layout
         
         for i in range(8):
             table_num = i + 1
-            row = (i // 4) * 2 + 1  # Skip label rows
-            col = (i % 4) + 1       # Skip label column
+            row = i // 4  # Direct row positioning
+            col = i % 4   # Direct column positioning
             
-            # Systematic table frame - bigger with more space
+            # Systematic table frame - bigger with more space and rounded appearance
             table_frame = tk.Frame(ac_frame, width=220, height=240, 
-                                 relief="solid", bd=3, bg="#FFFFFF")
+                                 relief="raised", bd=3, bg="#FFFFFF", 
+                                 highlightbackground="#E0E0E0", highlightthickness=2)
             table_frame.grid(row=row, column=col, padx=12, pady=12, sticky="nsew")
             table_frame.grid_propagate(False)
             
-            # Table header with systematic layout - bigger
-            header_frame = tk.Frame(table_frame, height=45, bg=self.get_table_color(table_num))
+            # Table header with systematic layout - bigger and rounded
+            header_frame = tk.Frame(table_frame, height=45, bg=self.get_table_color(table_num),
+                                  relief="raised", bd=2)
             header_frame.pack(fill=tk.X)
             header_frame.pack_propagate(False)
             
@@ -1595,7 +1927,7 @@ TIPS:
             )
             status_label.pack(side=tk.RIGHT, padx=12, pady=8)
             
-            # Remove button - systematic placement - bigger
+            # Remove button - systematic placement - bigger and rounded
             remove_btn = tk.Button(
                 header_frame,
                 text="✕",
@@ -1604,7 +1936,7 @@ TIPS:
                 bg="#F44336",
                 fg="white",
                 relief="raised",
-                bd=2,
+                bd=4,
                 width=2,
                 height=1,
                 cursor="hand2"
@@ -1613,7 +1945,7 @@ TIPS:
             remove_btn.bind("<Enter>", lambda e, b=remove_btn: b.configure(bg="#D32F2F"))
             remove_btn.bind("<Leave>", lambda e, b=remove_btn: b.configure(bg="#F44336"))
             
-            # Main table button area with status text - bigger
+            # Main table button area with status text - bigger and rounded
             btn = tk.Button(
                 table_frame, 
                 text=self.get_status_text(table_num),
@@ -1622,7 +1954,7 @@ TIPS:
                 bg=self.get_table_color(table_num),
                 fg="#1976D2",
                 relief="raised",
-                bd=3,
+                bd=4,
                 cursor="hand2"
             )
             btn.pack(fill=tk.BOTH, expand=True, padx=4, pady=2)
@@ -1642,48 +1974,52 @@ TIPS:
             buttons_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=4, pady=3)
             buttons_frame.pack_propagate(False)
             
-            # Generate Bill button - bigger design
+            # Generate Bill button - professional square design
             bill_btn = tk.Button(
                 buttons_frame,
-                text="GENERATE BILL",
-                font=("Segoe UI", 9, "bold"),
+                text="📄\nGENERATE\nBILL",
+                font=("Segoe UI", 8, "bold"),
                 command=lambda t=table_num: self.generate_table_bill_direct(t),
-                bg="#E0E0E0",
-                fg="#9E9E9E",
+                bg="#4CAF50",
+                fg="white",
                 relief="raised",
-                bd=2,
-                height=2,
+                bd=3,
+                width=8,
+                height=4,
                 cursor="hand2",
-                state="disabled"
+                state="disabled",
+                compound="center"
             )
-            bill_btn.pack(fill=tk.X, pady=(3, 2))
-            bill_btn.bind("<Enter>", lambda e, b=bill_btn: b.configure(bg="#BDBDBD") if b['state'] == 'normal' else None)
+            bill_btn.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2, pady=2)
+            bill_btn.bind("<Enter>", lambda e, b=bill_btn: b.configure(bg="#45a049") if b['state'] == 'normal' else None)
             bill_btn.bind("<Leave>", lambda e, b=bill_btn: b.configure(bg="#4CAF50") if b['state'] == 'normal' else None)
             
-            # View Bill button - bigger design
+            # View Bill button - professional square design
             view_bill_btn = tk.Button(
                 buttons_frame,
-                text="VIEW BILL",
-                font=("Segoe UI", 9, "bold"),
+                text="👁️\nVIEW\nBILL",
+                font=("Segoe UI", 8, "bold"),
                 command=lambda t=table_num: self.view_table_bill_direct(t),
-                bg="#E0E0E0",
-                fg="#9E9E9E",
+                bg="#2196F3",
+                fg="white",
                 relief="raised",
-                bd=2,
-                height=2,
+                bd=3,
+                width=8,
+                height=4,
                 cursor="hand2",
-                state="disabled"
+                state="disabled",
+                compound="center"
             )
-            view_bill_btn.pack(fill=tk.X, pady=(2, 3))
-            view_bill_btn.bind("<Enter>", lambda e, b=view_bill_btn: b.configure(bg="#BDBDBD") if b['state'] == 'normal' else None)
+            view_bill_btn.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2, pady=2)
+            view_bill_btn.bind("<Enter>", lambda e, b=view_bill_btn: b.configure(bg="#1976D2") if b['state'] == 'normal' else None)
             view_bill_btn.bind("<Leave>", lambda e, b=view_bill_btn: b.configure(bg="#2196F3") if b['state'] == 'normal' else None)
             
             self.table_buttons.append((table_frame, btn, icons_frame, header_frame, bill_btn, view_bill_btn))
         
         # Configure grid weights for systematic layout
-        for i in range(5):  # 4 columns + 1 label column
+        for i in range(4):  # 4 columns
             ac_frame.columnconfigure(i, weight=1)
-        for i in range(5):  # 2 rows * 2 + 1 label row
+        for i in range(2):  # 2 rows
             ac_frame.rowconfigure(i, weight=1)
 
     def open_table_menu(self, table_num):
@@ -1712,7 +2048,7 @@ TIPS:
         back_btn = tk.Button(header_frame, text="🔙 Back to Tables", 
                             command=self.back_to_tables,
                             font=("Segoe UI", 10, "bold"),
-                            bg="#FF5722", fg="white", relief="raised", bd=2,
+                            bg="#FF5722", fg="white", relief="raised", bd=3,
                             cursor="hand2", height=2)
         back_btn.pack(side=tk.LEFT, padx=5, pady=5)
         back_btn.bind("<Enter>", lambda e, b=back_btn: b.configure(bg="#E64A19"))
@@ -1824,7 +2160,7 @@ TIPS:
         remove_btn = tk.Button(actions_frame, text="🗑️ Remove Selected", 
                               command=self.remove_selected_table_item,
                               font=("Segoe UI", 9, "bold"),
-                              bg="#F44336", fg="white", relief="raised", bd=2,
+                              bg="#F44336", fg="white", relief="raised", bd=3,
                               cursor="hand2", height=2)
         remove_btn.pack(side=tk.RIGHT, padx=3)
         remove_btn.bind("<Enter>", lambda e, b=remove_btn: b.configure(bg="#D32F2F"))
@@ -1833,7 +2169,7 @@ TIPS:
         clear_btn = tk.Button(actions_frame, text="🧹 Clear Order", 
                              command=self.clear_table_order,
                              font=("Segoe UI", 9, "bold"),
-                             bg="#FF9800", fg="white", relief="raised", bd=2,
+                             bg="#FF9800", fg="white", relief="raised", bd=3,
                              cursor="hand2", height=2)
         clear_btn.pack(side=tk.RIGHT, padx=3)
         clear_btn.bind("<Enter>", lambda e, b=clear_btn: b.configure(bg="#F57C00"))
@@ -1842,7 +2178,7 @@ TIPS:
         generate_btn = tk.Button(actions_frame, text="💳 Generate Bill", 
                                 command=self.generate_table_bill,
                                 font=("Segoe UI", 9, "bold"),
-                                bg="#4CAF50", fg="white", relief="raised", bd=2,
+                                bg="#4CAF50", fg="white", relief="raised", bd=3,
                                 cursor="hand2", height=2)
         generate_btn.pack(side=tk.RIGHT, padx=3)
         generate_btn.bind("<Enter>", lambda e, b=generate_btn: b.configure(bg="#45a049"))
@@ -1923,9 +2259,9 @@ TIPS:
             printer_btn = tk.Button(
                 parent, 
                 text="PRINT",
-                font=("Segoe UI", 12, "bold"),
+                font=("Segoe UI", 10, "bold"),
                 command=lambda: self.print_table_order(table_num),
-                bg="#FF9800", fg="white", relief="raised", bd=2, width=6, height=2,
+                bg="#FF9800", fg="white", relief="raised", bd=3, width=4, height=1,
                 cursor="hand2"
             )
             printer_btn.pack(expand=True, pady=2)
@@ -1949,16 +2285,16 @@ TIPS:
             # Update buttons based on table status
             order = self.table_orders[table_num]
             if order:
-                bill_btn.configure(state="normal", bg="#4CAF50", fg="white", text="GENERATE BILL")
-                view_bill_btn.configure(state="normal", bg="#2196F3", fg="white", text="VIEW BILL")
+                bill_btn.configure(state="normal", bg="#4CAF50", fg="white", text="📄\nGENERATE\nBILL")
+                view_bill_btn.configure(state="normal", bg="#2196F3", fg="white", text="👁️\nVIEW\nBILL")
                 # Rebind hover events for enabled state
                 bill_btn.bind("<Enter>", lambda e, b=bill_btn: b.configure(bg="#45a049"))
                 bill_btn.bind("<Leave>", lambda e, b=bill_btn: b.configure(bg="#4CAF50"))
                 view_bill_btn.bind("<Enter>", lambda e, b=view_bill_btn: b.configure(bg="#1976D2"))
                 view_bill_btn.bind("<Leave>", lambda e, b=view_bill_btn: b.configure(bg="#2196F3"))
             else:
-                bill_btn.configure(state="disabled", bg="#E0E0E0", fg="#9E9E9E", text="GENERATE BILL")
-                view_bill_btn.configure(state="disabled", bg="#E0E0E0", fg="#9E9E9E", text="VIEW BILL")
+                bill_btn.configure(state="disabled", bg="#E0E0E0", fg="#9E9E9E", text="📄\nGENERATE\nBILL")
+                view_bill_btn.configure(state="disabled", bg="#E0E0E0", fg="#9E9E9E", text="👁️\nVIEW\nBILL")
                 # Remove hover events for disabled state
                 bill_btn.unbind("<Enter>")
                 bill_btn.unbind("<Leave>")
@@ -2476,8 +2812,12 @@ TIPS:
         date_entry.pack(side=tk.LEFT, padx=10)
         date_entry.bind("<KeyRelease>", lambda e: self.refresh_daily_sales())
         
-        # Export button
-        ttk.Button(header_frame, text="📤 Export Daily CSV", command=self.export_daily_csv).pack(side=tk.RIGHT, padx=10)
+        # Control buttons
+        buttons_frame = ttk.Frame(header_frame)
+        buttons_frame.pack(side=tk.RIGHT)
+        
+        ttk.Button(buttons_frame, text="🔄 Refresh", command=self.refresh_daily_sales).pack(side=tk.LEFT, padx=5)
+        ttk.Button(buttons_frame, text="📤 Export Daily CSV", command=self.export_daily_csv).pack(side=tk.LEFT, padx=5)
 
         # Enhanced summary
         summary_frame = ttk.LabelFrame(self.daily_sales_tab, text="📊 Daily Summary - Complete Details")
@@ -2964,7 +3304,7 @@ Last Sale: {summary['last_sale']}
 
 
 def fix_data_mismatch():
-    """Fix data mismatch between bill_items and products by creating missing products"""
+    """Check for data mismatch between bill_items and products (without auto-creating products)"""
     conn = get_conn()
     cur = conn.cursor()
     
@@ -2975,7 +3315,7 @@ def fix_data_mismatch():
         print(f"Existing product IDs: {existing_product_ids}")
         
         if not existing_product_ids:
-            print("No products found, cannot fix data mismatch")
+            print("No products found, cannot check data mismatch")
             return
         
         # Get all unique product_ids referenced in bill_items
@@ -2988,37 +3328,13 @@ def fix_data_mismatch():
         print(f"Missing product IDs: {missing_product_ids}")
         
         if missing_product_ids:
-            # Create missing products with generic information
-            for missing_id in missing_product_ids:
-                # Get sample data from an existing bill_item to preserve the original price
-                cur.execute("""
-                    SELECT price, qty, subtotal 
-                    FROM bill_items 
-                    WHERE product_id = ? 
-                    LIMIT 1
-                """, (missing_id,))
-                sample_data = cur.fetchone()
-                
-                if sample_data:
-                    price = sample_data[0]
-                    # Create a generic product name based on the ID
-                    product_name = f"Product {missing_id}"
-                    
-                    cur.execute("""
-                        INSERT INTO products (id, name, price, stock, image_path) 
-                        VALUES (?, ?, ?, ?, ?)
-                    """, (missing_id, product_name, price, 100, "images/default.png"))
-                    
-                    print(f"Created missing product: ID={missing_id}, Name={product_name}, Price={price}")
-            
-            conn.commit()
-            print("Data mismatch fixed successfully by creating missing products!")
+            print("Found orphaned bill_items referencing deleted products. These will be ignored.")
+            # Note: We don't recreate products anymore - deleted products stay deleted
         else:
             print("No data mismatch found")
             
     except Exception as e:
-        print(f"Error fixing data mismatch: {e}")
-        conn.rollback()
+        print(f"Error checking data mismatch: {e}")
     finally:
         conn.close()
 

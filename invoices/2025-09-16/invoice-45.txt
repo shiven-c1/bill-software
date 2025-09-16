@@ -1,0 +1,12 @@
+DSS
+deendayal nagar 
+Phone: 7020685839
+
+==== INVOICE ====
+Bill ID: 45
+Date: 2025-09-16 17:24:06
+
+Items:
+- T-Shirt x 2 @ 300.00 = 600.00
+
+Total: 600.00

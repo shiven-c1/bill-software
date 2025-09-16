@@ -1,0 +1,12 @@
+DSS
+deendayal nagar 
+Phone: 7020685839
+
+==== INVOICE ====
+Bill ID: 41
+Date: 2025-09-16 17:07:40
+
+Items:
+- lassi x 1 @ 30.00 = 30.00
+
+Total: 30.00
