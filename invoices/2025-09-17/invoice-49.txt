@@ -1,0 +1,12 @@
+DSS
+deendayal nagar 
+Phone: 7020685839
+
+==== INVOICE ====
+Bill ID: 49
+Date: 2025-09-17 12:57:45
+
+Items:
+- Noodles x 4 @ 70.00 = 280.00
+
+Total: 280.00

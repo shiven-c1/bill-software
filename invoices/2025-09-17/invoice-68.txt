@@ -1,0 +1,12 @@
+DSS
+deendayal nagar 
+Phone: 7020685839
+
+==== INVOICE ====
+Bill ID: 68
+Date: 2025-09-17 13:56:50
+
+Items:
+- chips x 3 @ 10.00 = 30.00
+
+Total: 30.00
